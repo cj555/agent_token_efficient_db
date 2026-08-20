@@ -18,7 +18,23 @@ defaults:
   compression: zstd
   partition_by: []
   freshness: 7d
+  # 每个 parquet row group 的行数。调小 = 写入时缓冲更少 = 内存峰值更低，
+  # 代价是文件里 row group 更多、元数据略大。128k 行对 10 列宽的表约 100MB 量级。
+  row_group_size: 131072
 
 engine:
   duckdb_threads: 0     # 0 = 自动
   polars_streaming: true
+  # polars 线程数上限。留空 = 用满所有核。机器上还有别的活儿要跑时，
+  # 调小可以同时压住 CPU 占用和内存峰值（每个 worker 各持一份 chunk）。
+  # 只在通过 `dw` 命令运行时生效 —— polars 的线程池在 import 时就固定了。
+  polars_max_threads: 4
+
+  # --- 内存预算 ---
+  # 单个 dataset 的单个阶段允许的进程峰值内存（GB）。dw run 每个阶段实测，
+  # 超了按 memory_on_exceed 处理，实测值记进 <dataset>/_meta/run_state.json。
+  # 按你的机器和并发情况定。留给流水线 1 GB 是个保守起点 —— 够跑本仓的
+  # 全部示例，也不至于挤掉机器上的其他工作。
+  memory_budget_gb: 1
+  # warn = 只警告不中断（默认）；fail = 直接判定该阶段失败
+  memory_on_exceed: warn

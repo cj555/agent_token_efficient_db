@@ -24,7 +24,9 @@ for f in $(git diff --cached --name-only --diff-filter=ACM); do
   fi
 done
 
-if git diff --cached --name-only | grep -q '^\.env'; then
+# 只拦 .env 本身。原来写的是 '^\.env'，会把 .env.example（模板，本来就该提交）
+# 一起拦掉 —— 加 $ 锚定行尾，并显式放行 .env.example 之类的衍生名。
+if git diff --cached --name-only | grep -qx '\.env'; then
   echo "拒绝提交 .env（凭据）"
   fail=1
 fi

@@ -427,6 +427,38 @@ def cmd_sql(a) -> int:
     return 0
 
 
+def _memory_problems(name: str, p) -> list[str]:
+    """内存预算体检：有没有申报、实测有没有超。"""
+    import json
+    from .runner import dataset_config
+    from . import memory as mem
+
+    out_: list[str] = []
+    declared = dataset_config(name, p).get("runtime", {}).get("memory_estimate_gb")
+    if declared is None:
+        return [f"{name}: config.yaml 未申报 runtime.memory_estimate_gb"
+                f"（新建/迁移时应先估算并与用户确认）"]
+
+    b = mem.budget(p)
+    if b["budget_gb"] and float(declared) > float(b["budget_gb"]):
+        out_.append(f"{name}: 申报 {declared} GB 超出全仓预算 {b['budget_gb']} GB")
+
+    f = p.dataset_dir(name) / "_meta" / "run_state.json"
+    if not f.is_file():
+        return out_
+    state = json.loads(f.read_text(encoding="utf-8")) or {}
+    peaks = state.get("peak_gb") or {}
+    deltas = state.get("delta_gb") or {}
+    for stage, peak in peaks.items():
+        # 与 dw run 同口径：绝对峰值对预算，增量对申报值
+        delta = float(deltas.get(stage, peak))
+        v = mem.check(float(peak) * 1e9, name, declared, p,
+                      baseline_bytes=int((float(peak) - delta) * 1e9))
+        if v["msg"]:
+            out_.append(f"{name}[{stage}]: {v['msg']}")
+    return out_
+
+
 def cmd_doctor(a) -> int:
     """一次性体检：结构、生成物是否过期、悬空引用、未跑的 dataset。"""
     from .contract import load_all
@@ -451,6 +483,7 @@ def cmd_doctor(a) -> int:
         for u in c.upstream:
             if u.kind == "dataset" and u.ref not in contracts:
                 problems.append(f"{name}: 上游 dataset '{u.ref}' 不存在")
+        problems.extend(_memory_problems(name, p))
     if not p.index_md.is_file():
         problems.append("data_contracts/INDEX.md 缺失（跑 dw index）")
     text = "\n".join(f"  - {x}" for x in problems) or "  一切正常"
@@ -563,8 +596,28 @@ def _force_utf8() -> None:
             pass
 
 
+def _apply_engine_limits() -> None:
+    """把 warehouse.yaml 的 engine 限制落成环境变量。
+
+    必须在 polars 被 import 之前做 —— polars 的线程池在 import 时就固定了。
+    这里是 `dw` 的第一行，早于任何 dataset 代码，所以是唯一可靠的时机。
+    线程数直接影响内存峰值（每个 worker 各持一份 chunk），也决定会不会
+    把 CPU 吃满 —— 机器上往往还有别的活儿在跑，所以留了这个旋钮。
+    """
+    import os
+    try:
+        from .config import load_config
+        eng = (load_config() or {}).get("engine", {}) or {}
+    except Exception:
+        return
+    n = eng.get("polars_max_threads")
+    if n and not os.environ.get("POLARS_MAX_THREADS"):
+        os.environ["POLARS_MAX_THREADS"] = str(int(n))
+
+
 def main(argv: list[str] | None = None) -> int:
     _force_utf8()
+    _apply_engine_limits()
     ap = build_parser()
     a = ap.parse_args(argv)
     try:

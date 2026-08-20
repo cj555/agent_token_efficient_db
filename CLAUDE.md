@@ -63,6 +63,29 @@ Polars 做 ETL、DuckDB 做跨表 SQL、PyArrow schema 作为类型真源。
 
 任何会写盘的操作（生成脚手架、改合约、删除、注册定时任务），**必须先把计划给用户看并等批准**。
 
+## 内存纪律
+
+**流水线通常要和这台机器上的其他工作共存，不能想吃多少吃多少。**
+`warehouse.yaml` 的 `engine.memory_budget_gb` 是全仓上限（当前 1 GB），
+每个 dataset 在 `config.yaml` 的 `runtime.memory_estimate_gb` 申报自己的用量。
+
+| 想知道什么 | 跑这个 |
+|---|---|
+| 某个 dataset 实际吃多少内存 | `dw run <ds> --stage transform`（每次都实测并打印峰值） |
+| 历史峰值 | `datasets/<ds>/_meta/run_state.json` 的 `peak_gb` |
+| 谁没申报 / 谁超了 | `dw doctor` |
+
+写 transform 的三条硬规矩：
+1. `build()` **返回 LazyFrame，不要自己 `.collect()`** —— `dw.write_curated` 会流式落盘。
+2. 大表别做全表 `sort` / `join_asof`。先把要 join 的东西在小表上算好（比如累积复权因子），
+   再按分区逐块 join，用 `dw.write_curated_chunks(chunks, ds, "year")`。
+   **分区粒度是给下游查询用的，处理粒度只服务于内存** —— 同一个分区值可以喂多块，
+   所以「按年分区、按季处理」是标准做法。
+3. 新建 / 迁移 dataset 时必须**先估算内存、给用户看、经确认**再动手
+   （`/create-dataset` 和 `/migrate-dataset` 的第 5 步）。
+
+参考量级：2510 万行 × 12 列的复权表，一把梭 7.8 GB，按年×季切块后 1.0 GB。
+
 ## 代码风格
 
 - Python ≥3.10，polars 用 lazy API（`scan_*` / `LazyFrame`），`.collect()` 只在最后调一次。

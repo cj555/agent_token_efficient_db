@@ -14,5 +14,8 @@ transform:
   partition_by: []
 
 runtime:
+  # 本阶段允许的进程峰值内存（GB）。dw run 每次实测并与之核对。
+  # 示例数据集只有几千行，0.2 GB 绰绰有余。
+  memory_estimate_gb: 0.2
   timeout_seconds: 1800
   retries: 2

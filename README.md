@@ -152,6 +152,72 @@ meta = dw.describe("example__gdp")                  # 合约摘要
 
 ---
 
+## 在 transform 里写数据
+
+```python
+import dwlib as dw
+
+# 常规：传 LazyFrame，流式落盘，不会把整表拉进内存
+dw.write_curated(lf, "my__table", partition_by=["year"])
+
+# 大表：按分区逐块落盘，峰值内存 = 单块而不是整表
+chunks = ((y, build_year(y)) for y in years)
+dw.write_curated_chunks(chunks, "my__table", "year", skip_empty=True)
+```
+
+`write_curated_chunks` 允许**同一个分区值出现多次**（写成同目录下的多个 part 文件）。
+这一点很关键：分区粒度是给下游查询用的，处理粒度只服务于内存，两者不必相同 ——
+「按年分区、按季处理」是本仓的标准写法。
+
+---
+
+## 内存预算
+
+数据流水线通常要与机器上的其他工作共存，所以内存是**硬约束**，
+不是「注意一下」。做成了可测量、可申报、可拦截三件套：
+
+```yaml
+# warehouse.yaml
+engine:
+  memory_budget_gb: 1        # 全仓上限
+  memory_on_exceed: warn     # warn | fail
+  polars_max_threads: 4      # 16→4 实测省一半内存
+```
+
+```yaml
+# datasets/<ds>/config.yaml
+runtime:
+  memory_estimate_gb: 1.0    # 该 dataset 的申报值，新建/迁移时必须估算并经用户确认
+```
+
+`dw run` 每个阶段实测峰值，与两个数比对后打印，并写进 `_meta/run_state.json`：
+**绝对峰值**对全仓预算（关心机器会不会被吃满），**增量**对该 dataset 的申报值
+（关心它自己吃了多少 —— 批量跑时多个 dataset 共用一个进程，不减基线会让小表背大表的锅）。
+`dw doctor` 事后核查漏报与超标。
+
+```python
+from dwlib.memory import peak_rss, estimate_bytes, fmt_gb
+
+with peak_rss() as t:        # 自己测一段代码
+    ...
+print(fmt_gb(t.peak))
+
+estimate_bytes(schema, rows) # 动手前估算：Σ列宽 × 行数 × 3（join/sort 的中间副本）
+```
+
+超预算时的标准手段，按顺序试：
+
+1. `build()` 返回 **LazyFrame**，别自己 `.collect()`。
+2. 按分区切块，用 `write_curated_chunks`。切块粒度不够就再切细（年→季→月）。
+3. 别对大表做全表 `sort` / `join_asof`；先在小表上把要 join 的东西算好再逐块 join。
+4. 源文件大小不均时**按字节分批**，不要按文件个数 —— 后者会因为个别巨型文件失控。
+5. 调小 `polars_max_threads`。
+
+实测参考：2510 万行的复权表一把梭 7.8 GB → 切块后 1.0 GB；
+3000 万行的 ETF 持仓表一把梭 **29.7 GB**（会拖死机器）→ 按字节分批后 0.97 GB。
+
+---
+
 ## 外部源监控
 
 ```powershell

@@ -9,15 +9,17 @@
     dw.vectors("sec__mdna_vectors")      # (n, dim) numpy 矩阵
     dw.sql("select ... from a join b")   # DuckDB 跨 dataset 查询
     dw.describe("sec__mdna")             # 合约摘要（读 registry.json）
-    dw.write_curated(df, "sec__mdna")    # transform 的收尾动作
+    dw.write_curated(df, "sec__mdna")    # transform 的收尾动作（传 LazyFrame = 流式落盘）
+    dw.write_curated_chunks(chunks, "x", "year")   # 大表按分区逐块落盘，控内存峰值
 """
 from .config import Paths, find_repo_root, load_config, load_dotenv, paths
 from .contract import Contract, list_datasets, load_all, load_contract
 from .external import get_source, load_sources, run_health
 from .io import (
     arrow, connect, curated_path, describe, exists, frame, load, run_state,
-    scan, sql, vectors, write_curated,
+    scan, sql, vectors, write_curated, write_curated_chunks,
 )
+from . import memory
 from .quality import check
 from .runner import dataset_config
 
@@ -27,6 +29,7 @@ __all__ = [
     "Contract", "Paths",
     "arrow", "check", "connect", "curated_path", "dataset_config", "describe",
     "exists", "find_repo_root", "frame", "get_source", "list_datasets", "load",
-    "load_all", "load_config", "load_contract", "load_dotenv", "load_sources", "paths",
-    "run_health", "run_state", "scan", "sql", "vectors", "write_curated",
+    "load_all", "load_config", "load_contract", "load_dotenv", "load_sources",
+    "memory", "paths", "run_health", "run_state", "scan", "sql", "vectors",
+    "write_curated", "write_curated_chunks",
 ]

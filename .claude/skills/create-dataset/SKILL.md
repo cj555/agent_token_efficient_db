@@ -40,11 +40,36 @@ dw show <候选> --fields meta,schema   # 只在确有候选时展开
 | dataset | grain | 上游 | 阶段 | 触网 |
 |---|---|---|---|---|
 
-### 5. 输出计划并等待批准
-计划必须包含：family 拆分表、每个 dataset 的列草案、将新建的文件清单、外部源登记内容、定时任务安排、风险点。
+### 5. 估算内存峰值并**询问用户** ★ 必做，不可跳过
+数据流水线通常要与机器上的其他工作共存，`warehouse.yaml` 的
+`engine.memory_budget_gb` 是硬约束。**在写计划之前**先算一遍，别等跑挂了再说。
+
+估算方法（`dwlib.memory` 里有同样的公式）：
+```
+每行字节 ≈ Σ 各列宽度（数值 4-8；日期 4；字符串按 48 算）
+峰值 ≈ 每行字节 × 行数 × 3        # ×3 是 join/sort/groupby 的中间副本开销
+```
+拿这个数对照预算，然后在计划里给用户一张表：
+
+| dataset | 预估行数 | 每行字节 | 预估峰值 | 预算内？ | 超了怎么办 |
+|---|---|---|---|---|---|
+
+**超预算时的标准手段，按顺序试：**
+1. `build()` 返回 **LazyFrame**（不要自己 `.collect()`），`write_curated` 会流式落盘。
+2. 按分区切块，用 `dw.write_curated_chunks(chunks, ds, "year")` 逐块喂 ——
+   同一个分区值可以喂多块，所以「按年分区、按季处理」是合法且常用的组合。
+3. 别对大表做全表 `sort` / `join_asof`：先在小表上把要 join 的东西算好，再逐块 join。
+4. 调小 `warehouse.yaml` 的 `engine.polars_max_threads`（16→4 实测省一半内存）。
+
+估算结果和应对方案**必须让用户确认**，确认后写进每个 dataset 的
+`config.yaml` 的 `runtime.memory_estimate_gb`。之后每次 `dw run` 都会实测核对，
+超申报值 25% 就告警；`dw doctor` 也会查有没有漏报。
+
+### 6. 输出计划并等待批准
+计划必须包含：family 拆分表、每个 dataset 的列草案、**内存预算表**、将新建的文件清单、外部源登记内容、定时任务安排、风险点。
 **停在这里，等用户明确说「可以/批准/继续」再往下。**
 
-### 6. 落地（批准后）
+### 7. 落地（批准后）
 ```bash
 dw new --example-spec > /tmp/spec.yaml   # 看格式；然后按拆分表写 spec
 dw new --family /tmp/spec.yaml           # 一次生成全族脚手架
@@ -54,15 +79,16 @@ dw new --family /tmp/spec.yaml           # 一次生成全族脚手架
 2. 实现 `ingest.py`（只有触网的 dataset 有）和 `transform.py`
 3. 写 `tests/test_logic.py` 的业务断言（`test_contract.py` 是生成物，别动）
 4. 更新 `README.md` 的一句话说明
+5. 把第 5 步确认的估算值填进 `config.yaml` 的 `runtime.memory_estimate_gb`
 
-### 7. 注册与验证
+### 8. 注册与验证
 ```bash
 dw index                       # 注册进 INDEX.md / graph.json / registry.json
 dw run --family <family>       # 按拓扑序跑 ingest→transform→test
 dw validate                    # 合约校验
 ```
 
-### 8. 维护任务（先问再装）
+### 9. 维护任务（先问再装）
 只给**触网的** dataset 装定时刷新；纯派生表通常跟着上游跑即可。
 ```bash
 .\scripts\install_schedule.ps1 -Dataset <name> -Time 06:30

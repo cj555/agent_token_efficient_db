@@ -66,16 +66,38 @@ def run_stage(dataset: str, stage: str, p: Paths | None = None) -> dict:
                 "secs": 0.0, "detail": f"config.yaml 中 {stage}.enabled=false"}
 
     try:
+        from . import memory as mem
+        declared = cfg.get("runtime", {}).get("memory_estimate_gb")
         mod = _load_module(f, f"dw_{dataset}_{stage}")
-        result = mod.main()
-        return {"stage": stage, "ok": True, "secs": round(time.time() - t0, 1),
-                "detail": _brief(result)}
+        with mem.peak_rss() as tracker:
+            result = mod.main()
+        verdict = mem.check(tracker.peak, dataset, declared, p,
+                            baseline_bytes=tracker.baseline)
+        out = {"stage": stage, "ok": verdict["level"] != "fail",
+               "secs": round(time.time() - t0, 1),
+               "peak_gb": verdict["peak_gb"], "detail": _brief(result)}
+        if verdict["msg"]:
+            out["detail"] += f" | [内存{verdict['level']}] {verdict['msg']}"
+        _record_peak(dataset, stage, verdict, p)
+        return out
     except NotImplementedError as e:
         return {"stage": stage, "ok": False, "secs": round(time.time() - t0, 1),
                 "detail": f"未实现: {e}"}
     except Exception as e:
         return {"stage": stage, "ok": False, "secs": round(time.time() - t0, 1),
                 "detail": f"{type(e).__name__}: {e}"}
+
+
+def _record_peak(dataset: str, stage: str, verdict: dict, p: Paths) -> None:
+    """把实测峰值写进 _meta/run_state.json，供 dw doctor 事后核对申报值。"""
+    import json
+    meta = p.dataset_dir(dataset) / "_meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    f = meta / "run_state.json"
+    state = json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
+    state.setdefault("peak_gb", {})[stage] = verdict["peak_gb"]
+    state.setdefault("delta_gb", {})[stage] = verdict["delta_gb"]
+    f.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
 def _brief(result) -> str:

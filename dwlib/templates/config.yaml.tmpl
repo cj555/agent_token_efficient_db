@@ -14,5 +14,11 @@ transform:
   partition_by: []
 
 runtime:
+  # 本 dataset 单个阶段允许的进程峰值内存（GB）。**新建时必须估算并经用户确认**，
+  # 不是随手填的 —— 全仓上限见 warehouse.yaml 的 engine.memory_budget_gb。
+  # dw run 每次实测，超申报值 25% 会告警（多半是数据涨了，或写法退化成整表物化）。
+  # 撑不住预算时的标准手段：build() 返回 LazyFrame 让 write_curated 流式落盘；
+  # 还不够就按分区切块，用 dw.write_curated_chunks 逐块喂。
+  memory_estimate_gb: 1.0
   timeout_seconds: 1800
   retries: 2
