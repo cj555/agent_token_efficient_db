@@ -177,6 +177,18 @@ Claude 直接读这个文件定位，不必自己去探测。
 本仓库是**代码与合约仓库**，数据留在本地：`storage/`、所有 parquet/duckdb/csv、`.env`、`.health/`
 都已在 `.gitignore` 中。换机器时用 `dw run --all` 重建。
 
+### 凭据
+
+`external_sources.yaml` 里只写 `${ENV_VAR}` 占位，真值放仓库根的 `.env`：
+
+```bash
+cp .env.example .env        # 然后填真值
+```
+
+`dwlib` 在解析仓库根目录时自动加载 `.env`（`dwlib.load_dotenv`），**不覆盖**已有的
+进程环境变量 —— CI 里用真正的 secret 注入即可，无需改代码。
+变量缺失时 `dw health` 会直接报出变量名，而不是让请求带着空串发出去。
+
 如果你要一边用它管自己的数据、一边改进这个框架，推荐两个仓库：
 
 - **public**（本仓库）：只有框架 + 示例 dataset，改框架在这里改

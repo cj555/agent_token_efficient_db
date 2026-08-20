@@ -27,8 +27,17 @@ def parse_duration(text: str) -> dt.timedelta:
 
 def expand_env(value: Any) -> Any:
     """把 ${ENV_VAR} 占位替换为环境变量。凭据永远不写进 YAML 明文。"""
+    def _sub(m):
+        name = m.group(1)
+        if name not in os.environ:
+            raise KeyError(
+                f"环境变量 {name} 未设置：请在仓库根的 .env 里写 {name}=<值>"
+                f"（.env 已被 .gitignore 忽略，不会提交）"
+            )
+        return os.environ[name]
+
     if isinstance(value, str):
-        return _ENV.sub(lambda m: os.environ.get(m.group(1), ""), value)
+        return _ENV.sub(_sub, value)
     if isinstance(value, dict):
         return {k: expand_env(v) for k, v in value.items()}
     if isinstance(value, list):

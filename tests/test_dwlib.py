@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -11,7 +12,7 @@ import yaml
 
 from dwlib import graph as G
 from dwlib.adopt import adopt, infer
-from dwlib.config import Paths
+from dwlib.config import Paths, find_repo_root, load_dotenv
 from dwlib.contract import Contract, bump, load_contract, parse_contract_file
 from dwlib.external import parse_duration, expand_env
 from dwlib.quality import check
@@ -321,3 +322,68 @@ def test_expand_env(monkeypatch):
     src = {"headers": {"Authorization": "Bearer ${MY_TOKEN}"}, "list": ["${MY_TOKEN}"]}
     assert expand_env(src)["headers"]["Authorization"] == "Bearer secret"
     assert expand_env(src)["list"] == ["secret"]
+def test_expand_env_missing_var_raises_named_error(monkeypatch):
+    """缺变量必须报出变量名。
+
+    回归：以前静默替换成空串，源照样「展开成功」，然后在 httpx 层炸出
+    `Illegal header value b'... '` —— 与根因毫无关系，极难定位。
+    """
+    monkeypatch.delenv("NOPE_TOKEN", raising=False)
+    with pytest.raises(KeyError, match="NOPE_TOKEN"):
+        expand_env({"headers": {"X": "Bearer ${NOPE_TOKEN}"}})
+
+
+def _write_env(d: Path, *lines: str) -> None:
+    (d / ".env").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_load_dotenv_reads_repo_root(tmp_path: Path, monkeypatch):
+    """回归：.env 在 CLAUDE.md / .gitignore 里都有约定，但从来没被加载过。"""
+    for k in ("DW_A", "DW_B", "DW_C", "DW_D"):
+        monkeypatch.delenv(k, raising=False)
+    _write_env(
+        tmp_path,
+        "# 注释行",
+        "",
+        "DW_A=plain",
+        "DW_B='单引号'",
+        'DW_C="双引号"',
+        "DW_D = 两边留空格 ",
+        "这行没有等号，应被跳过",
+    )
+    load_dotenv.cache_clear()
+    load_dotenv(tmp_path)
+    assert os.environ["DW_A"] == "plain"
+    assert os.environ["DW_B"] == "单引号"
+    assert os.environ["DW_C"] == "双引号"
+    assert os.environ["DW_D"] == "两边留空格"
+    for k in ("DW_A", "DW_B", "DW_C", "DW_D"):
+        monkeypatch.delenv(k, raising=False)
+
+
+def test_load_dotenv_does_not_override_process_env(tmp_path: Path, monkeypatch):
+    """CI 里注入的真 secret 必须赢过仓库里的 .env。"""
+    monkeypatch.setenv("DW_WINS", "from-process")
+    _write_env(tmp_path, "DW_WINS=from-dotenv")
+    load_dotenv.cache_clear()
+    load_dotenv(tmp_path)
+    assert os.environ["DW_WINS"] == "from-process"
+
+
+def test_load_dotenv_tolerates_missing_file(tmp_path: Path):
+    load_dotenv.cache_clear()
+    load_dotenv(tmp_path)          # 没有 .env 不该抛异常
+
+
+def test_find_repo_root_loads_dotenv(tmp_path: Path, monkeypatch):
+    """接线检查：走 find_repo_root 就该把 .env 载进来（这才是真实调用路径）。"""
+    monkeypatch.delenv("DW_WIRED", raising=False)
+    monkeypatch.delenv("DW_REPO", raising=False)
+    (tmp_path / "warehouse.yaml").write_text("version: 1\n", encoding="utf-8")
+    _write_env(tmp_path, "DW_WIRED=yes")
+    sub = tmp_path / "datasets" / "x"
+    sub.mkdir(parents=True)
+    load_dotenv.cache_clear()
+    assert find_repo_root(sub) == tmp_path.resolve()
+    assert os.environ["DW_WIRED"] == "yes"
+    monkeypatch.delenv("DW_WIRED", raising=False)

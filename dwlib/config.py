@@ -12,14 +12,34 @@ import yaml
 _MARKER = "warehouse.yaml"
 
 
+@lru_cache(maxsize=8)
+def load_dotenv(root: Path) -> None:
+    """把仓库根的 .env 载入 os.environ（不覆盖已有变量）。
+
+    凭据只放 .env（已被 .gitignore 忽略），YAML 里永远只写 ${ENV_VAR} 占位。
+    """
+    f = root / ".env"
+    if not f.is_file():
+        return
+    for line in f.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        os.environ.setdefault(k.strip(), v.strip().strip("'\""))
+
+
 def find_repo_root(start: Path | None = None) -> Path:
     """向上查找 warehouse.yaml 所在目录。支持 DW_REPO 环境变量覆盖。"""
     env = os.environ.get("DW_REPO")
     if env:
-        return Path(env).resolve()
+        r = Path(env).resolve()
+        load_dotenv(r)
+        return r
     cur = (start or Path.cwd()).resolve()
     for cand in [cur, *cur.parents]:
         if (cand / _MARKER).is_file():
+            load_dotenv(cand)
             return cand
     raise FileNotFoundError(
         f"未找到 {_MARKER}：请在数据仓库目录内运行 dw，或设置 DW_REPO 环境变量。"

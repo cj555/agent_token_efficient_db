@@ -37,7 +37,7 @@ Polars 做 ETL、DuckDB 做跨表 SQL、PyArrow schema 作为类型真源。
 | 文件 | 性质 |
 |---|---|
 | `datasets/<ds>/contract.yaml` | ★ 真源，人写人读，**保留注释**。除 `dw new` / `dw infer --write` 外不要程序化重写 |
-| `data_contracts/external_sources.yaml` | ★ 真源，外部源清单。凭据写 `${ENV_VAR}` 占位 |
+| `data_contracts/external_sources.yaml` | ★ 真源，外部源清单。凭据写 `${ENV_VAR}` 占位，真值放仓库根 `.env`（`dwlib` 自动加载，见 `.env.example`） |
 | `datasets/<ds>/schema.py` | 生成物，`dw index` 从合约重生成，**不要手改** |
 | `datasets/<ds>/tests/test_contract.py` | 生成物，同上 |
 | `data_contracts/INDEX.md` / `graph.json` / `registry.json` | 生成物，`dw index` 产出 |

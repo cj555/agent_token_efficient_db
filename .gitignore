@@ -33,6 +33,7 @@ tmp/
 # 凭据
 .env
 .env.*
+!.env.example
 **/secrets.yaml
 *.key
 *.pem

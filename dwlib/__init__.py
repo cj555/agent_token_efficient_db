@@ -11,7 +11,7 @@
     dw.describe("sec__mdna")             # 合约摘要（读 registry.json）
     dw.write_curated(df, "sec__mdna")    # transform 的收尾动作
 """
-from .config import Paths, find_repo_root, load_config, paths
+from .config import Paths, find_repo_root, load_config, load_dotenv, paths
 from .contract import Contract, list_datasets, load_all, load_contract
 from .external import get_source, load_sources, run_health
 from .io import (
@@ -27,6 +27,6 @@ __all__ = [
     "Contract", "Paths",
     "arrow", "check", "connect", "curated_path", "dataset_config", "describe",
     "exists", "find_repo_root", "frame", "get_source", "list_datasets", "load",
-    "load_all", "load_config", "load_contract", "load_sources", "paths",
+    "load_all", "load_config", "load_contract", "load_dotenv", "load_sources", "paths",
     "run_health", "run_state", "scan", "sql", "vectors", "write_curated",
 ]
