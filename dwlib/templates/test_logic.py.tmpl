@@ -1,0 +1,17 @@
+"""{{name}} 的业务断言（手写）。合约层面的检查已由 test_contract.py 自动覆盖。"""
+import pytest
+
+import dwlib as dw
+
+DATASET = "{{name}}"
+
+pytestmark = pytest.mark.skipif(
+    not dw.exists(DATASET), reason=f"{DATASET} 尚无 curated 数据"
+)
+
+
+def test_placeholder():
+    df = dw.load(DATASET).collect()
+    assert df.height > 0
+    # TODO: 写真正的业务断言，例如
+    # assert df["amount"].min() >= 0

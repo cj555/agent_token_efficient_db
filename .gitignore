@@ -1,0 +1,57 @@
+# ============================================================
+# 数据绝不入库：本仓库只提交「代码 + 合约 + 生成的索引」
+# ============================================================
+
+# 数据湖
+storage/
+data/
+raw/
+curated/
+tmp/
+
+# 任何数据文件格式
+*.parquet
+*.arrow
+*.feather
+*.duckdb
+*.db
+*.sqlite
+*.jsonl
+*.csv
+*.tsv
+*.xlsx
+*.pkl
+*.npy
+*.npz
+
+# 运行产物与监控
+.health/
+.dw/
+**/_meta/run_state.json
+**/manifest.json
+
+# 凭据
+.env
+.env.*
+**/secrets.yaml
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# 编辑器
+.idea/
+.vscode/
+.DS_Store
+
+# 白名单：小体积测试夹具必须显式放行
+!tests/fixtures/**

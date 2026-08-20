@@ -1,0 +1,78 @@
+# 本仓库的工作约定
+
+这是一个 **token 高效、高度解耦**的本地数据仓库。数据以 parquet 存在本地，
+Polars 做 ETL、DuckDB 做跨表 SQL、PyArrow schema 作为类型真源。
+
+## Token 纪律（最重要）
+
+**默认动作是「跑 `dw` 命令」，不是「读文件」。**
+
+| 想知道什么 | 跑这个 | 不要这样 |
+|---|---|---|
+| 有哪些数据 | `dw ls` | `ls datasets/` 后逐个读 README |
+| 有没有现成的数据能用 | `dw search <关键词>` | 通读所有 contract.yaml |
+| 某个表的结构 | `dw show <ds> --fields schema` | 打开整份 contract.yaml |
+| 谁依赖它 / 它依赖谁 | `dw deps <ds> --down` / `--up` | 递归读合约 |
+| 改这一列会影响谁 | `dw impact <ds> --column c` | 全仓 grep |
+| 数据对不对 | `dw validate <ds>` | 读数据抽样目测 |
+| 外部源健康吗 | `cat .health/report.json` | 自己去 curl |
+| 仓库整体有没有问题 | `dw doctor` | 逐个目录检查 |
+
+三层渐进披露：`data_contracts/INDEX.md`（全仓概览，最先读）→ `graph.json`（局部查询，用 `dw deps/impact` 而非直接读）→ 单个 `contract.yaml`（确有必要时才展开）。
+**永远不要一次性读整个 `data_contracts/` 或所有 dataset 的代码。**
+
+## 结构不变量
+
+- **1 个 dataset = 1 张 curated 表**。grain（主键）变了就该拆新 dataset。
+- 每个 dataset 是自洽单元：`datasets/<name>/` 下有 `contract.yaml`、`config.yaml`、
+  `ingest.py`（仅触网的有）、`transform.py`、`schema.py`、`README.md`、`tests/`。
+  改一个 dataset **不需要打开任何其他 dataset 的文件**。
+- `ingest` 与 `transform` 严格分离：ingest 触网、幂等、可跳过；transform 纯本地、确定性、可无限重放。
+  改口径只重跑 transform，不要重新下载。
+- 存储分层：`storage/raw/<source_id>/`（按外部源，可共享）、`storage/blob/<source_id>/`（非表格资产）、
+  `storage/curated/<dataset>/`（唯一承诺产物）、`storage/tmp/<dataset>/`（可删）。
+
+## 真源与生成物
+
+| 文件 | 性质 |
+|---|---|
+| `datasets/<ds>/contract.yaml` | ★ 真源，人写人读，**保留注释**。除 `dw new` / `dw infer --write` 外不要程序化重写 |
+| `data_contracts/external_sources.yaml` | ★ 真源，外部源清单。凭据写 `${ENV_VAR}` 占位 |
+| `datasets/<ds>/schema.py` | 生成物，`dw index` 从合约重生成，**不要手改** |
+| `datasets/<ds>/tests/test_contract.py` | 生成物，同上 |
+| `data_contracts/INDEX.md` / `graph.json` / `registry.json` | 生成物，`dw index` 产出 |
+| `datasets/<ds>/_meta/run_state.json` | 运行状态，程序写 |
+
+## 数据不进 git
+
+本仓库是**代码与合约仓库**。`storage/`、所有 parquet/duckdb/csv、`.env`、`.health/` 都在
+`.gitignore` 里。换机器时用 `dw run --all` 重建数据，不要把数据提交上去。
+可选第二道防线：`git config core.hooksPath scripts/hooks`。
+
+## 改动流程
+
+有对应 skill 的事情就走 skill，它们都会**先给计划、经你批准再动手**：
+
+| 需求 | skill |
+|---|---|
+| 新建数据集 | `/create-dataset` |
+| 从老项目移植 | `/migrate-dataset` |
+| 改合约/加列/改口径 | `/change-contract` |
+| 外部源坏了 | `/fix-source` |
+| 删除数据集 | `/del-dataset` |
+
+任何会写盘的操作（生成脚手架、改合约、删除、注册定时任务），**必须先把计划给用户看并等批准**。
+
+## 代码风格
+
+- Python ≥3.10，polars 用 lazy API（`scan_*` / `LazyFrame`），`.collect()` 只在最后调一次。
+- 路径一律走 `dw.paths()`，不要硬编码。
+- transform 的收尾统一用 `dw.write_curated(...)`，它会写 parquet 并更新 `run_state.json`。
+- 跨 dataset 读数据只用 `dw.load()` / `dw.arrow()` / `dw.sql()`，不要直接拼 parquet 路径 ——
+  `dw refs` 靠这些调用形态来维护引用表，绕过它会让影响分析失灵。
+
+## 环境
+
+```bash
+.venv/Scripts/dw.exe <cmd>        # Windows；或先激活 venv 后直接用 dw
+```

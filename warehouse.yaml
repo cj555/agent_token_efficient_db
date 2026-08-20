@@ -1,0 +1,24 @@
+# 仓库级全局配置。dw 的所有路径解析都从这里出发。
+version: 1
+
+storage:
+  # 数据湖根目录。相对路径 = 相对本文件所在目录。
+  # 可改为仓库外的绝对路径（如 D:/dwdata），进一步杜绝误提交。
+  root: storage
+  raw: raw            # storage/raw/<source_id>/      按外部源组织，多 dataset 共享
+  blob: blob          # storage/blob/<source_id>/     非表格资产（原文/PDF/图片）
+  curated: curated    # storage/curated/<dataset>/    1 dataset = 1 张表
+  tmp: tmp            # storage/tmp/<dataset>/        过程产物，随时可删
+
+naming:
+  # dataset 命名规范：<family>__<table>，全小写下划线
+  pattern: "^[a-z][a-z0-9_]*(__[a-z][a-z0-9_]*)?$"
+
+defaults:
+  compression: zstd
+  partition_by: []
+  freshness: 7d
+
+engine:
+  duckdb_threads: 0     # 0 = 自动
+  polars_streaming: true

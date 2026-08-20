@@ -1,0 +1,91 @@
+{
+ "edges": [
+  {
+   "from": "example_worldbank_gdp",
+   "kind": "external",
+   "to": "example__gdp"
+  },
+  {
+   "from": "example__gdp",
+   "kind": "dataset",
+   "to": "example__gdp_growth"
+  }
+ ],
+ "nodes": {
+  "example__gdp": {
+   "columns": [
+    "country_code",
+    "country_name",
+    "year",
+    "gdp_usd",
+    "fetched_at"
+   ],
+   "consumers": [
+    "example__gdp_growth"
+   ],
+   "domain": "demo",
+   "family": "example",
+   "grain": [
+    "country_code",
+    "year"
+   ],
+   "network": true,
+   "schedule": null,
+   "status": "active",
+   "tags": [
+    "demo",
+    "macro"
+   ]
+  },
+  "example__gdp_growth": {
+   "columns": [
+    "country_code",
+    "year",
+    "gdp_usd",
+    "gdp_growth_pct"
+   ],
+   "consumers": [],
+   "domain": "demo",
+   "family": "example",
+   "grain": [
+    "country_code",
+    "year"
+   ],
+   "network": false,
+   "schedule": null,
+   "status": "active",
+   "tags": [
+    "demo",
+    "macro"
+   ]
+  }
+ },
+ "refs": {
+  "example__gdp": [
+   {
+    "file": "README.md",
+    "in_dataset": null,
+    "line": 65,
+    "text": "dw sql \"select country_name, year, gdp_usd from example__gdp order by gdp_usd desc limit 5\""
+   },
+   {
+    "file": "README.md",
+    "in_dataset": null,
+    "line": 142,
+    "text": "lf   = dw.load(\"example__gdp\")                      # polars LazyFrame（惰性）"
+   },
+   {
+    "file": "README.md",
+    "in_dataset": null,
+    "line": 147,
+    "text": "meta = dw.describe(\"example__gdp\")                  # 合约摘要"
+   },
+   {
+    "file": "datasets/example__gdp_growth/transform.py",
+    "in_dataset": "example__gdp_growth",
+    "line": 17,
+    "text": "lf = dw.load(\"example__gdp\")"
+   }
+  ]
+ }
+}

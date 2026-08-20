@@ -1,0 +1,14 @@
+# 外部数据源清单 —— 唯一真源。dw health / fix-source 都读这里。
+# 凭据永远写 ${ENV_VAR} 占位，不写明文（.env 已被 .gitignore 忽略）。
+version: 1
+sources:
+  example_worldbank_gdp:
+    kind: http                      # http | local
+    url: https://api.worldbank.org/v2/country/all/indicator/NY.GDP.MKTP.CD?format=json&per_page=500
+    format: json
+    freshness: 90d                  # 超过则 dw health 报 warn
+    schedule: "0 7 * * 1"           # 供 install_schedule.ps1 参考
+    license: "World Bank Open Data (CC BY 4.0)"
+    note: 示例源：世界银行 GDP 指标，公开无需认证
+    # headers:
+    #   Authorization: "Bearer ${MY_API_TOKEN}"

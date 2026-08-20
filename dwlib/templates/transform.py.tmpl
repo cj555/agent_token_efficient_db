@@ -1,0 +1,38 @@
+"""{{name}} — 阶段 2：{{transform_input}} → storage/curated/{{name}}/
+
+职责边界：纯本地、确定性、可无限重放。不触网（触网的事情归 ingest.py）。
+用 polars lazy 表达变换，最后一步 dw.write_curated 落 parquet。
+"""
+from __future__ import annotations
+
+import polars as pl
+
+import dwlib as dw
+
+DATASET = "{{name}}"
+
+
+def build() -> pl.LazyFrame:
+    cfg = dw.dataset_config(DATASET)
+
+    # ---- 读上游 ----
+{{read_upstream}}
+
+    # ---- TODO: 变换逻辑 ----
+    # lf = lf.filter(...).with_columns(...).select(...)
+    raise NotImplementedError("请实现 transform：产出与 contract.yaml 列定义一致的表")
+
+
+def main() -> dict:
+    cfg = dw.dataset_config(DATASET)
+    lf = build()
+    return dw.write_curated(
+        lf,
+        DATASET,
+        partition_by=cfg["transform"].get("partition_by") or None,
+        mode=cfg["transform"].get("write_mode", "overwrite"),
+    )
+
+
+if __name__ == "__main__":
+    print(main())

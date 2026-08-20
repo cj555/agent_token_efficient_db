@@ -1,0 +1,89 @@
+name: example__gdp
+version: 0.1.0
+owner: ''
+status: active
+domain: demo
+family: example
+tags:
+- demo
+- macro
+purpose: '世界银行各国年度 GDP（现价美元，指标 NY.GDP.MKTP.CD）。
+
+  框架的端到端冒烟样例：演示 http JSON 源 -> raw -> curated parquet 的完整链路，
+
+  以及外部源健康监控如何只盯住这一个触网的 dataset。
+
+  '
+grain:
+- country_code
+- year
+partitions: []
+columns:
+- name: country_code
+  type: string
+  nullable: false
+  unique: false
+  desc: ISO 国家/地区代码
+  unit: null
+- name: country_name
+  type: string
+  nullable: true
+  unique: false
+  desc: 国家/地区名称
+  unit: null
+- name: year
+  type: int32
+  nullable: false
+  unique: false
+  desc: 年份
+  unit: null
+- name: gdp_usd
+  type: float64
+  nullable: true
+  unique: false
+  desc: GDP（现价美元），缺测为 null
+  unit: USD
+- name: fetched_at
+  type: timestamp[us]
+  nullable: false
+  unique: false
+  desc: 本行的抓取时间
+  unit: null
+quality:
+- rule: row_count_between
+  column: null
+  min: 100.0
+  max: null
+  values: null
+  pattern: null
+  window: null
+  severity: error
+- rule: value_between
+  column: year
+  min: 1960.0
+  max: 2100.0
+  values: null
+  pattern: null
+  window: null
+  severity: error
+- rule: not_null
+  column: country_code
+  min: null
+  max: null
+  values: null
+  pattern: null
+  window: null
+  severity: error
+upstream:
+- kind: external
+  ref: example_worldbank_gdp
+  note: 世界银行公开 API，无需认证
+sla:
+  freshness: 90d
+  schedule: null
+  stage: all
+changelog:
+- version: 0.1.0
+  date: '2026-08-20'
+  kind: init
+  note: 初始创建

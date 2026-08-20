@@ -1,0 +1,18 @@
+# 运行参数（与合约分离：改这里不影响数据契约）
+dataset: {{name}}
+
+ingest:
+  enabled: {{has_ingest}}
+  source_id: "{{source_id}}"      # 对应 data_contracts/external_sources.yaml
+  mode: incremental               # full | incremental
+  skip_if_fingerprint_match: true # raw manifest 命中即跳过下载（多 dataset 共享 source 时省带宽）
+
+transform:
+  enabled: {{has_transform}}
+  mode: standard                  # standard | passthrough
+  write_mode: overwrite           # overwrite | append
+  partition_by: []
+
+runtime:
+  timeout_seconds: 1800
+  retries: 2

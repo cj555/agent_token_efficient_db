@@ -1,0 +1,49 @@
+"""{{name}} — 阶段 1：外部源 → storage/raw|blob/{{source_id}}/
+
+职责边界（不要越界）：
+  * 只负责「把外部数据原样落地」+ 写 manifest（指纹/时间/条数）。
+  * 不做清洗、不做类型转换、不做业务逻辑 —— 那些属于 transform.py。
+  * 必须幂等：同样的输入重复跑，结果一致，且能靠 manifest 跳过重复下载。
+这样 EDGAR 改版之类的问题只会出现在本文件，`/fix-source` 只需改这里。
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+
+import dwlib as dw
+
+DATASET = "{{name}}"
+SOURCE_ID = "{{source_id}}"
+
+
+def main() -> dict:
+    cfg = dw.dataset_config(DATASET)
+    src = dw.get_source(SOURCE_ID)          # 已展开 ${ENV_VAR} 凭据
+    raw_dir = dw.paths().raw(SOURCE_ID)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest_f = raw_dir / "manifest.json"
+    manifest = json.loads(manifest_f.read_text(encoding="utf-8")) if manifest_f.is_file() else {}
+
+    # ---- TODO: 实现下载 ----
+    # import httpx
+    # with httpx.Client(timeout=60, follow_redirects=True) as cli:
+    #     r = cli.get(src["url"], headers=src.get("headers", {}))
+    #     r.raise_for_status()
+    #     content = r.content
+    # digest = hashlib.sha256(content).hexdigest()
+    # if cfg["ingest"].get("skip_if_fingerprint_match") and manifest.get("sha256") == digest:
+    #     return {"skipped": True, "reason": "指纹未变", "sha256": digest}
+    # target = raw_dir / "data.json"
+    # target.write_bytes(content)
+    # manifest = {"sha256": digest, "bytes": len(content), "files": [target.name]}
+    raise NotImplementedError("请实现 ingest：下载 → 落 raw → 写 manifest")
+
+    manifest_f.write_text(json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
+    return manifest
+
+
+if __name__ == "__main__":
+    print(main())

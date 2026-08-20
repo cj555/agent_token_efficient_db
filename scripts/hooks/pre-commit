@@ -1,0 +1,32 @@
+#!/bin/sh
+# 数据泄漏防线：拒绝把数据文件或大文件提交进这个「代码 + 合约」仓库。
+# 安装： git config core.hooksPath scripts/hooks
+MAX_BYTES=5242880   # 5MB
+BLOCKED='\.(parquet|arrow|feather|duckdb|db|sqlite|jsonl|npy|npz|pkl)$'
+
+fail=0
+for f in $(git diff --cached --name-only --diff-filter=ACM); do
+  case "$f" in
+    tests/fixtures/*) continue ;;
+  esac
+  if echo "$f" | grep -Eq "$BLOCKED"; then
+    echo "拒绝提交数据文件: $f"
+    echo "  → 数据留在本地 storage/，用 dw run 重建；不要进 git。"
+    fail=1
+    continue
+  fi
+  if [ -f "$f" ]; then
+    size=$(wc -c < "$f")
+    if [ "$size" -gt "$MAX_BYTES" ]; then
+      echo "拒绝提交大文件 (${size}B > ${MAX_BYTES}B): $f"
+      fail=1
+    fi
+  fi
+done
+
+if git diff --cached --name-only | grep -q '^\.env'; then
+  echo "拒绝提交 .env（凭据）"
+  fail=1
+fi
+
+exit $fail

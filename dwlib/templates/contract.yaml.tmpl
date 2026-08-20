@@ -1,0 +1,45 @@
+# 数据合约 —— 本文件是 {{name}} 的唯一真源。
+# 改动请走 `/change-contract` skill（它会用 dw impact 找出所有下游代码）。
+name: {{name}}
+version: 0.1.0
+owner: "{{owner}}"
+status: draft            # draft | active | deprecated
+domain: "{{domain}}"
+family: "{{family}}"
+tags: []
+
+# 自然语言描述：这是什么数据、为什么存在、典型用途。
+# ★ dw search 主要检索这一段，写清楚能让以后复用时被找到。
+purpose: |
+  {{purpose}}
+
+# 主键列。决定了「1 dataset = 1 张表」的边界；grain 变了就该拆新 dataset。
+grain: {{grain}}
+
+partitions: []           # 例：[year] —— 会写成 hive 分区目录
+
+columns:
+  # - name: id
+  #   type: string       # int64/float64/bool/string/date32/timestamp[us]/fixed_size_list<float32,768>
+  #   nullable: false
+  #   unique: true
+  #   desc: 主键
+
+quality:
+  # - rule: row_count_between
+  #   min: 1
+  #   severity: error
+
+# external 表示触网，会被 dw health / fix-source 监控；dataset 表示内部派生。
+upstream:{{upstream_block}}
+
+sla:
+  freshness: 7d
+  schedule: null         # cron 表达式，如 "0 6 * * *"；null = 手动
+  stage: all             # ingest | transform | all
+
+changelog:
+  - version: 0.1.0
+    date: "{{date}}"
+    kind: init
+    note: 初始创建

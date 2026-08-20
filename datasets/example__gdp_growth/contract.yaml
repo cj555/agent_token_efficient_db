@@ -1,0 +1,65 @@
+# 数据合约 —— 本文件是 example__gdp_growth 的唯一真源。
+# 改动请走 `/change-contract` skill（它会用 dw impact 找出所有下游代码）。
+name: example__gdp_growth
+version: 0.1.0
+owner: ""
+status: active
+domain: "demo"
+family: "example"
+tags:
+- demo
+- macro
+
+# 自然语言描述：这是什么数据、为什么存在、典型用途。
+# ★ dw search 主要检索这一段，写清楚能让以后复用时被找到。
+purpose: |
+  由 example__gdp 派生的同比增长率。演示纯内部派生 dataset（只有 transform.py、不触网）与依赖图/影响分析。
+
+# 主键列。决定了「1 dataset = 1 张表」的边界；grain 变了就该拆新 dataset。
+grain: ['country_code', 'year']
+
+partitions: []           # 例：[year] —— 会写成 hive 分区目录
+
+columns:
+- name: country_code
+  type: string
+  nullable: false
+  desc: ISO 国家/地区代码
+- name: year
+  type: int32
+  nullable: false
+  desc: 年份
+- name: gdp_usd
+  type: float64
+  nullable: true
+  desc: 当年 GDP（现价美元）
+  unit: USD
+- name: gdp_growth_pct
+  type: float64
+  nullable: true
+  desc: 相对上一年的名义增长率；上一年缺失时为 null
+  unit: percent
+
+quality:
+- rule: row_count_between
+  min: 100
+  severity: error
+- rule: not_null
+  column: country_code
+  severity: error
+
+# external 表示触网，会被 dw health / fix-source 监控；dataset 表示内部派生。
+upstream:
+- kind: dataset
+  ref: example__gdp
+
+sla:
+  freshness: 7d
+  schedule: null         # cron 表达式，如 "0 6 * * *"；null = 手动
+  stage: all             # ingest | transform | all
+
+changelog:
+  - version: 0.1.0
+    date: "2026-08-20"
+    kind: init
+    note: 初始创建

@@ -1,0 +1,4 @@
+# 统一用 LF 入库，避免跨平台 diff 噪音；shell hook 必须是 LF 才能执行
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.parquet binary

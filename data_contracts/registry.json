@@ -1,0 +1,133 @@
+{
+ "datasets": {
+  "example__gdp": {
+   "access": {
+    "arrow": "dw.arrow(\"example__gdp\")",
+    "polars": "dw.load(\"example__gdp\")",
+    "sql": "dw.sql(\"select * from example__gdp\")"
+   },
+   "columns": [
+    {
+     "desc": "ISO 国家/地区代码",
+     "name": "country_code",
+     "nullable": false,
+     "type": "string"
+    },
+    {
+     "desc": "国家/地区名称",
+     "name": "country_name",
+     "nullable": true,
+     "type": "string"
+    },
+    {
+     "desc": "年份",
+     "name": "year",
+     "nullable": false,
+     "type": "int32"
+    },
+    {
+     "desc": "GDP（现价美元），缺测为 null",
+     "name": "gdp_usd",
+     "nullable": true,
+     "type": "float64"
+    },
+    {
+     "desc": "本行的抓取时间",
+     "name": "fetched_at",
+     "nullable": false,
+     "type": "timestamp[us]"
+    }
+   ],
+   "consumers": [
+    "example__gdp_growth"
+   ],
+   "domain": "demo",
+   "family": "example",
+   "grain": [
+    "country_code",
+    "year"
+   ],
+   "name": "example__gdp",
+   "partitions": [],
+   "purpose": "世界银行各国年度 GDP（现价美元，指标 NY.GDP.MKTP.CD）。\n框架的端到端冒烟样例：演示 http JSON 源 -> raw -> curated parquet 的完整链路，\n以及外部源健康监控如何只盯住这一个触网的 dataset。\n",
+   "sla": {
+    "freshness": "90d",
+    "schedule": null,
+    "stage": "all"
+   },
+   "status": "active",
+   "tags": [
+    "demo",
+    "macro"
+   ],
+   "upstream": [
+    {
+     "kind": "external",
+     "ref": "example_worldbank_gdp"
+    }
+   ],
+   "version": "0.1.0"
+  },
+  "example__gdp_growth": {
+   "access": {
+    "arrow": "dw.arrow(\"example__gdp_growth\")",
+    "polars": "dw.load(\"example__gdp_growth\")",
+    "sql": "dw.sql(\"select * from example__gdp_growth\")"
+   },
+   "columns": [
+    {
+     "desc": "ISO 国家/地区代码",
+     "name": "country_code",
+     "nullable": false,
+     "type": "string"
+    },
+    {
+     "desc": "年份",
+     "name": "year",
+     "nullable": false,
+     "type": "int32"
+    },
+    {
+     "desc": "当年 GDP（现价美元）",
+     "name": "gdp_usd",
+     "nullable": true,
+     "type": "float64"
+    },
+    {
+     "desc": "相对上一年的名义增长率；上一年缺失时为 null",
+     "name": "gdp_growth_pct",
+     "nullable": true,
+     "type": "float64"
+    }
+   ],
+   "consumers": [],
+   "domain": "demo",
+   "family": "example",
+   "grain": [
+    "country_code",
+    "year"
+   ],
+   "name": "example__gdp_growth",
+   "partitions": [],
+   "purpose": "由 example__gdp 派生的同比增长率。演示纯内部派生 dataset（只有 transform.py、不触网）与依赖图/影响分析。\n",
+   "sla": {
+    "freshness": "7d",
+    "schedule": null,
+    "stage": "all"
+   },
+   "status": "active",
+   "tags": [
+    "demo",
+    "macro"
+   ],
+   "upstream": [
+    {
+     "kind": "dataset",
+     "ref": "example__gdp"
+    }
+   ],
+   "version": "0.1.0"
+  }
+ },
+ "version": 1
+}

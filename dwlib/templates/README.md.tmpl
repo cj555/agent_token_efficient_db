@@ -1,0 +1,17 @@
+# {{name}}
+
+{{purpose}}
+
+- **grain**：待填（见 contract.yaml）
+- **上游**：{{upstream_desc}}
+- **产物**：`storage/curated/{{name}}/`（1 dataset = 1 张表）
+
+```bash
+dw run {{name}}          # ingest + transform + test
+dw validate {{name}}     # 合约校验
+```
+
+```python
+import dwlib as dw
+df = dw.load("{{name}}").collect()
+```
