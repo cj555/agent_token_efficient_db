@@ -71,6 +71,12 @@ def test_contract_template_keeps_comments(repo: Paths):
     assert "grain 变了就该拆新 dataset" in text
 
 
+def test_scaffold_has_no_tests_init(repo: Paths):
+    """dataset 的 tests/ 不能有 __init__.py —— 多个 dataset 同名包会让 pytest 收集冲突。"""
+    new_dataset("demo__a", repo, source_id="s")
+    assert not (repo.dataset_dir("demo__a") / "tests" / "__init__.py").exists()
+
+
 def test_name_validation(repo: Paths):
     with pytest.raises(ValueError):
         new_dataset("BadName", repo)

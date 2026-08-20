@@ -108,7 +108,6 @@ def new_dataset(
             "transform.py.tmpl", name=name, read_upstream=reads, transform_input=src_desc))
 
     write("tests/test_logic.py", _render("test_logic.py.tmpl", name=name))
-    write("tests/__init__.py", "")
     write("_meta/.gitkeep", "")
 
     created += regenerate(load_contract(name, p), p)
