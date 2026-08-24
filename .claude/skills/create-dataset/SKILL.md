@@ -41,7 +41,7 @@ dw show <候选> --fields meta,schema   # 只在确有候选时展开
 |---|---|---|---|---|
 
 ### 5. 估算内存峰值并**询问用户** ★ 必做，不可跳过
-数据流水线通常要与机器上的其他工作共存，`warehouse.yaml` 的
+这台机器的数据流水线要与视频渲染共存，`warehouse.yaml` 的
 `engine.memory_budget_gb` 是硬约束。**在写计划之前**先算一遍，别等跑挂了再说。
 
 估算方法（`dwlib.memory` 里有同样的公式）：
@@ -88,13 +88,36 @@ dw run --family <family>       # 按拓扑序跑 ingest→transform→test
 dw validate                    # 合约校验
 ```
 
-### 9. 维护任务（先问再装）
-只给**触网的** dataset 装定时刷新；纯派生表通常跟着上游跑即可。
+### 9. 维护任务 ★ 必做的收尾，不要漏
+
+**dataset 建完但没有定时任务 = 只会更新这一次。** 这一步不是可选项，
+每次 `create-dataset` 落地后都要主动问用户要不要装、什么时候跑——
+不要默认"用户会自己记得装"。
+
+优先用 **`-Family`**，不要给同一个 family 里的每个 dataset 各开一个
+`-Dataset` 任务：`dw run --family <名>` 在同一进程里按拓扑序跑完整族，
+天然避免"上游任务还没跑完、下游任务的定时器已经到点"的竞态。只有
+dataset 不属于任何 family、或明确要独立于 family 节奏刷新时才单独用
+`-Dataset`。
+
+**排时间前先查 upstream 约束**：
 ```bash
-.\scripts\install_schedule.ps1 -Dataset <name> -Time 06:30
-.\scripts\install_schedule.ps1 -Monitor -Time 07:00    # 外部源健康监控
+dw deps <ds-或-family> --up          # 谁是我的上游
+dw show <upstream-ds> --fields meta  # 看它的 sla.schedule
+schtasks /query /fo table /nh | findstr dw-    # 看这台机器已经在什么时间点跑什么
 ```
-执行前把要注册的任务名和时间念给用户确认。
+新任务的时间必须**晚于**它依赖的外部数据源/上游 family 的产出时间，
+且与已注册的其他任务错开（避免同一时刻抢内存预算——这台机器全仓
+`memory_budget_gb` 是共享的，见 `warehouse.yaml`）。没有明确上游约束、
+用户也没指定时间时，默认排在夜间空闲时段。
+
+```bash
+.\scripts\install_schedule.ps1 -Family <name> -Time <HH:mm>      # 推荐：整族一起
+.\scripts\install_schedule.ps1 -Dataset <name> -Time <HH:mm>     # 独立 dataset
+.\scripts\install_schedule.ps1 -Monitor -Time 07:00              # 外部源健康监控（全仓只需一次）
+```
+执行前把**任务名、时间、为什么选这个时间（相对哪个上游/哪些已有任务错开）**
+念给用户确认，再动手注册。任务输出会自动写进 `logs/<TaskName>.log`。
 
 ## 参考
 - `references/splitting.md` —— 拆分四问 + SEC 案例（需要判断拆几个表时读）

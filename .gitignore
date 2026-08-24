@@ -29,6 +29,7 @@ tmp/
 .dw/
 **/_meta/run_state.json
 **/manifest.json
+logs/
 
 # 凭据
 .env
