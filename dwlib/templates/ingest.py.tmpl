@@ -28,6 +28,12 @@ def main() -> dict:
     manifest = json.loads(manifest_f.read_text(encoding="utf-8")) if manifest_f.is_file() else {}
 
     # ---- TODO: 实现下载 ----
+    # 先在 config.yaml 的 ingest 段选定边界策略（ndays / lookback_days / max_records
+    # 三选一，见该文件注释），再在下面把它读出来并真正传给抓取逻辑 —— 光声明不读等于没做。
+    # 分页场景直接复用 dwlib.http.paginate(..., max_records=cfg["ingest"].get("max_records")):
+    #     max_records = cfg["ingest"].get("max_records")
+    #     for page in dw.http.paginate(cli, url, params, api_key, max_records=max_records):
+    #         ...
     # import httpx
     # with httpx.Client(timeout=60, follow_redirects=True) as cli:
     #     r = cli.get(src["url"], headers=src.get("headers", {}))
@@ -39,7 +45,7 @@ def main() -> dict:
     # target = raw_dir / "data.json"
     # target.write_bytes(content)
     # manifest = {"sha256": digest, "bytes": len(content), "files": [target.name]}
-    raise NotImplementedError("请实现 ingest：下载 → 落 raw → 写 manifest")
+    raise NotImplementedError("请实现 ingest：下载 → 落 raw → 写 manifest（边界策略已在 config.yaml 声明并需在此读取使用）")
 
     manifest_f.write_text(json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
     return manifest

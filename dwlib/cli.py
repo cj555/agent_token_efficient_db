@@ -459,6 +459,34 @@ def _memory_problems(name: str, p) -> list[str]:
     return out_
 
 
+def _ingest_problems(name: str, p) -> list[str]:
+    """ingest 配置体检：声明的 ingest.* 键有没有被 ingest.py 实际读取。
+
+    纯文本匹配，零语义判断——只回答"这个键名字面量有没有在 ingest.py 源码里
+    出现过"，不判断绑定的边界值是否足够/正确（那是人工判断，见 create-dataset
+    skill 的边界策略步骤）。5c0aaa7 那次事故的根源就是 config.yaml 里的
+    `mode: incremental` 字段从没被对应 ingest.py 读取过，看着像控制了增量行为，
+    实际什么都不控制。
+    """
+    from .runner import dataset_config
+    d = p.dataset_dir(name)
+    ingest_py = d / "ingest.py"
+    if not ingest_py.is_file():
+        return []
+    cfg = dataset_config(name, p).get("ingest", {}) or {}
+    if not cfg.get("enabled", True):
+        return []
+    src = ingest_py.read_text(encoding="utf-8")
+    out_: list[str] = []
+    for key in cfg:
+        if key in ("enabled", "source_id"):   # 框架字段，不是抓取逻辑要读的
+            continue
+        if key not in src:
+            out_.append(f"{name}: config.yaml 的 ingest.{key} 未在 ingest.py 中出现"
+                        f"（死字段，删掉或接上）")
+    return out_
+
+
 def cmd_doctor(a) -> int:
     """一次性体检：结构、生成物是否过期、悬空引用、未跑的 dataset。"""
     from .contract import load_all
@@ -484,6 +512,7 @@ def cmd_doctor(a) -> int:
             if u.kind == "dataset" and u.ref not in contracts:
                 problems.append(f"{name}: 上游 dataset '{u.ref}' 不存在")
         problems.extend(_memory_problems(name, p))
+        problems.extend(_ingest_problems(name, p))
     if not p.index_md.is_file():
         problems.append("data_contracts/INDEX.md 缺失（跑 dw index）")
     text = "\n".join(f"  - {x}" for x in problems) or "  一切正常"
@@ -602,7 +631,7 @@ def _apply_engine_limits() -> None:
     必须在 polars 被 import 之前做 —— polars 的线程池在 import 时就固定了。
     这里是 `dw` 的第一行，早于任何 dataset 代码，所以是唯一可靠的时机。
     线程数直接影响内存峰值（每个 worker 各持一份 chunk），也决定会不会
-    把 CPU 吃满 —— 机器上往往还有别的活儿在跑，所以留了这个旋钮。
+    把 CPU 吃满 —— 这台机器还要跑视频渲染，所以留了这个旋钮。
     """
     import os
     try:

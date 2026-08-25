@@ -40,7 +40,27 @@ dw show <候选> --fields meta,schema   # 只在确有候选时展开
 | dataset | grain | 上游 | 阶段 | 触网 |
 |---|---|---|---|---|
 
-### 5. 估算内存峰值并**询问用户** ★ 必做，不可跳过
+### 5. 确定增量抓取的边界策略并**询问用户** ★ 必做，不可跳过
+
+`ingest.py` 对外部 API 的抓取永远不能无界——`max_records: null` + 分页循环
+等于"每次跑都拉全部历史"，在低速率限制下会把"每日增量"跑成几小时的任务，
+还可能在写盘前把整批结果攒进内存（同类风险：把所有页攒进内存再一次性落盘，量一大就会撑爆预算，应边拉边落盘）。
+
+先看这份数据的边界怎么天然形成，从下面选一种写进 config.yaml 的 ingest 段
+（选完在计划里给用户看，别自己拍板）：
+
+| 策略 | 适用场景 | 参考实现 |
+|---|---|---|
+| ndays | 按最近 N 个自然/工作日回看，文件存在即跳过 | 适合"按天产出"的源（如日线行情） |
+| lookback_days | 按日期字段过滤候选，可叠加二级上限 | 适合按日期字段筛选的备案/记录类源 |
+| max_records | 分页 API，结果按时间倒序，拉够最近 N 条就停 | 适合无日期参数、只能翻页的 API |
+| 无边界（全量） | 仅当数据源体量小、一次全量几秒内完事 | 需在注释里写明原因，仍要给 max_records 一个显式小整数兜底 |
+
+不要保留模板里的占位注释就直接落地——必须替换成选定的具体字段和数值，
+并在 ingest.py 里真正读取使用（`dw doctor` 会查 config.yaml 声明的 ingest.*
+键有没有在 ingest.py 源码里出现，出现死字段会直接报出来）。
+
+### 6. 估算内存峰值并**询问用户** ★ 必做，不可跳过
 这台机器的数据流水线要与视频渲染共存，`warehouse.yaml` 的
 `engine.memory_budget_gb` 是硬约束。**在写计划之前**先算一遍，别等跑挂了再说。
 
@@ -65,11 +85,11 @@ dw show <候选> --fields meta,schema   # 只在确有候选时展开
 `config.yaml` 的 `runtime.memory_estimate_gb`。之后每次 `dw run` 都会实测核对，
 超申报值 25% 就告警；`dw doctor` 也会查有没有漏报。
 
-### 6. 输出计划并等待批准
-计划必须包含：family 拆分表、每个 dataset 的列草案、**内存预算表**、将新建的文件清单、外部源登记内容、定时任务安排、风险点。
+### 7. 输出计划并等待批准
+计划必须包含：family 拆分表、每个 dataset 的列草案、**增量抓取边界策略**、**内存预算表**、将新建的文件清单、外部源登记内容、定时任务安排、风险点。
 **停在这里，等用户明确说「可以/批准/继续」再往下。**
 
-### 7. 落地（批准后）
+### 8. 落地（批准后）
 ```bash
 dw new --example-spec > /tmp/spec.yaml   # 看格式；然后按拆分表写 spec
 dw new --family /tmp/spec.yaml           # 一次生成全族脚手架
@@ -79,16 +99,17 @@ dw new --family /tmp/spec.yaml           # 一次生成全族脚手架
 2. 实现 `ingest.py`（只有触网的 dataset 有）和 `transform.py`
 3. 写 `tests/test_logic.py` 的业务断言（`test_contract.py` 是生成物，别动）
 4. 更新 `README.md` 的一句话说明
-5. 把第 5 步确认的估算值填进 `config.yaml` 的 `runtime.memory_estimate_gb`
+5. 把第 5 步确认的边界策略、第 6 步确认的内存估算值都填进 `config.yaml`
+   （`ingest` 段的具体字段、`runtime.memory_estimate_gb`）
 
-### 8. 注册与验证
+### 9. 注册与验证
 ```bash
 dw index                       # 注册进 INDEX.md / graph.json / registry.json
 dw run --family <family>       # 按拓扑序跑 ingest→transform→test
 dw validate                    # 合约校验
 ```
 
-### 9. 维护任务 ★ 必做的收尾，不要漏
+### 10. 维护任务 ★ 必做的收尾，不要漏
 
 **dataset 建完但没有定时任务 = 只会更新这一次。** 这一步不是可选项，
 每次 `create-dataset` 落地后都要主动问用户要不要装、什么时候跑——
