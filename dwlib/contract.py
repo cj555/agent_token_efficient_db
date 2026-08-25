@@ -60,6 +60,10 @@ class SLA(BaseModel):
     freshness: str = "7d"          # 数据最大允许陈旧度
     schedule: str | None = None    # cron 表达式；None = 手动
     stage: Literal["ingest", "transform", "all"] = "all"
+    # 谁负责按时跑它。family=跟着 dw-family-<族> 一起跑（默认，同进程按拓扑序，
+    # 天然避免上下游竞态）；own=自己一个 Windows 任务 dw-<ds>-<stage>，族任务不带它；
+    # manual=都不跑，只有点名 `dw run <ds>` 才动。
+    runner: Literal["family", "own", "manual"] = "family"
 
 
 class ChangeLogEntry(BaseModel):

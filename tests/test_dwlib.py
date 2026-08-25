@@ -14,9 +14,17 @@ from dwlib import graph as G
 from dwlib.adopt import adopt, infer
 from dwlib.config import Paths, find_repo_root, load_dotenv
 from dwlib.contract import Contract, bump, load_contract, parse_contract_file
-from dwlib.external import parse_duration, expand_env
+from dwlib.dashboard import render
+from dwlib.external import (
+    _dig, expand_env, html_to_text, json_key_paths, parse_duration, schema_hash,
+)
+from dwlib.health import (
+    ack_for, ack_load, ack_record, attempts_clear, attempts_load, attempts_record,
+    dataset_freshness,
+)
 from dwlib.quality import check
 from dwlib.registry import reindex
+from dwlib.schedule import parse_cron, set_sla
 from dwlib.remove import plan as rm_plan
 from dwlib.scaffold import arrow_expr, gen_schema_py, new_dataset, new_family
 
@@ -387,3 +395,155 @@ def test_find_repo_root_loads_dotenv(tmp_path: Path, monkeypatch):
     assert find_repo_root(sub) == tmp_path.resolve()
     assert os.environ["DW_WIRED"] == "yes"
     monkeypatch.delenv("DW_WIRED", raising=False)
+
+
+# ---------------- 健康监控：schema 结构探针 ----------------
+
+def test_schema_hash_ignores_values():
+    """同结构不同值必须是同一个 hash —— 否则每次探测都在误报。"""
+    a = json_key_paths({"results": [{"ticker": "AAPL", "n": 1}]})
+    b = json_key_paths({"results": [{"ticker": "MSFT", "n": 999}]})
+    assert schema_hash(a) == schema_hash(b)
+
+
+def test_schema_hash_catches_renamed_field():
+    a = json_key_paths({"results": [{"value": 1}]})
+    b = json_key_paths({"results": [{"amount": 1}]})
+    assert schema_hash(a) != schema_hash(b)
+    assert set(b) - set(a) == {"results[].amount"}
+    assert set(a) - set(b) == {"results[].value"}
+
+
+def test_dig_supports_index_and_key_paths():
+    doc = {"results": [{"x": {"y": 1}}]}
+    assert _dig(doc, "results[0].x") == {"y": 1}
+    assert _dig([{"a": 1}, [{"b": 2}]], "[1][0]") == {"b": 2}
+    with pytest.raises(KeyError):
+        _dig(doc, "nope[0]")
+
+
+def test_html_to_text_drops_script_and_markup():
+    t = html_to_text("<html><body><h1>Rate limits</h1>"
+                     "<script>var x=1</script><p>10 req/s</p></body></html>")
+    assert "Rate limits" in t and "10 req/s" in t and "var x" not in t
+
+
+# ---------------- 健康监控：新鲜度 / 熔断 / 确认 ----------------
+
+def _contract(p: Paths, name: str, freshness: str, schedule: str | None = "0 7 * * *"):
+    d = p.dataset_dir(name)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "contract.yaml").write_text(yaml.safe_dump({
+        "name": name, "grain": ["id"],
+        "columns": [{"name": "id", "type": "int64"}],
+        "sla": {"freshness": freshness, "schedule": schedule},
+    }, allow_unicode=True), encoding="utf-8")
+
+
+def _run_state(p: Paths, name: str, hours_ago: float):
+    import datetime as dt
+    meta = p.dataset_dir(name) / "_meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    when = dt.datetime.now() - dt.timedelta(hours=hours_ago)
+    (meta / "run_state.json").write_text(
+        json.dumps({"last_run": when.isoformat(timespec="seconds")}), encoding="utf-8")
+
+
+def test_dataset_freshness_levels(repo: Paths):
+    """只有真超了才报。日更的表在下次跑之前必然接近上限，预警等于天天黄。"""
+    _contract(repo, "demo__fresh", "1d"); _run_state(repo, "demo__fresh", 2)
+    _contract(repo, "demo__near", "1d"); _run_state(repo, "demo__near", 22)
+    _contract(repo, "demo__late", "1d"); _run_state(repo, "demo__late", 50)
+    _contract(repo, "demo__never", "1d")
+    got = {d["dataset"]: d["status"] for d in dataset_freshness(repo)}
+    assert got == {"demo__fresh": "ok", "demo__near": "ok",
+                   "demo__late": "fail", "demo__never": "warn"}
+
+
+def test_manual_dataset_never_fails_on_freshness(repo: Paths):
+    """没排计划任务的表没有「该跑没跑」一说，最多提醒，不该标成故障。"""
+    _contract(repo, "demo__manual", "1d", schedule=None)
+    _run_state(repo, "demo__manual", 100)
+    assert dataset_freshness(repo)[0]["status"] == "warn"
+
+
+def test_attempts_quarantine_after_three_fails(repo: Paths):
+    for _ in range(2):
+        rec = attempts_record("src1", "fail", "试了", repo)
+    assert rec["quarantined"] is False
+    rec = attempts_record("src1", "fail", "又试了", repo)
+    assert rec["fails"] == 3 and rec["quarantined"] is True
+    assert attempts_record("src1", "ok", "修好了", repo)["quarantined"] is False
+
+
+def test_attempts_clear_keeps_log(repo: Paths):
+    attempts_record("src1", "fail", "x", repo)
+    attempts_clear("src1", repo)
+    rec = attempts_load(repo)["src1"]
+    assert rec["fails"] == 0 and len(rec["log"]) == 2
+
+
+def test_ack_requires_note(repo: Paths):
+    with pytest.raises(ValueError):
+        ack_record("src1", "schema", "h1", "  ", p=repo)
+
+
+def test_ack_is_version_scoped_not_permanent_mute(repo: Paths):
+    """确认只对当时那个版本生效：上游再变一次必须重新报。"""
+    ack_record("src1", "schema", "hash-v2", "只新增了不用的字段", p=repo)
+    ack = ack_load(repo)
+    assert ack_for(ack, "src1", "schema")["hash"] == "hash-v2"
+    assert ack_for(ack, "src1", "schema")["hash"] != "hash-v3"
+
+
+def test_dashboard_renders_with_empty_state():
+    assert "<title>数据仓库健康面板</title>" in render({})
+
+
+def test_dashboard_live_mode_adds_controls():
+    st = {"freshness": [{"dataset": "demo__a", "status": "ok", "freshness": "1d",
+                         "schedule": "0 15 * * *", "runner": "family",
+                         "family": "demo", "last_run": "2026-08-25T15:00:00",
+                         "reason": ""}]}
+    assert "<button class=\"save\">" not in render(st)          # 只读模式不给按钮
+    live = render(st, live_token="t0k3n")
+    assert "<button class=\"save\">" in live and "t0k3n" in live
+
+
+# ---------------- 调度：cron 转换与合约行级改写 ----------------
+
+def test_parse_cron_daily_and_weekly():
+    assert parse_cron("0 15 * * *") == (None, "15:00")
+    assert parse_cron("30 23 * * 1-5") == ("MON,TUE,WED,THU,FRI", "23:30")
+    assert parse_cron("5 6 * * 0") == ("SUN", "06:05")
+
+
+def test_parse_cron_rejects_what_schtasks_cannot_express():
+    """Windows 任务计划表达不了的 cron 直接报错，不偷偷降级成别的时间。"""
+    for bad in ("*/5 * * * *", "0 15 1 * *", "", "0 99 * * *"):
+        with pytest.raises(ValueError):
+            parse_cron(bad)
+
+
+def test_set_sla_edits_only_those_lines_and_keeps_comments(repo: Paths):
+    d = repo.dataset_dir("demo__sla")
+    d.mkdir(parents=True)
+    (d / "contract.yaml").write_text(
+        "name: demo__sla\n"
+        "grain: [id]\n"
+        "sla:\n"
+        "  freshness: 1d\n"
+        '  schedule: "0 15 * * *"   # 每天下午跑\n'
+        "  stage: all\n"
+        "changelog: []\n", encoding="utf-8")
+    changed = set_sla("demo__sla", repo, schedule=None, freshness="30d",
+                      runner="manual")
+    text = (d / "contract.yaml").read_text(encoding="utf-8")
+    # 值变了，行尾那句「每天下午跑」就成了假话 —— 连注释一起去掉
+    assert "  schedule: null" in text
+    assert "每天下午跑" not in text
+    assert any("去掉过时的行尾注释" in c for c in changed)
+    assert "  freshness: 30d" in text
+    assert "  runner: manual" in text                    # 缺的字段补进 sla 块
+    assert "  stage: all" in text and "grain: [id]" in text
+    assert len(changed) == 3

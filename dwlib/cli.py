@@ -10,6 +10,8 @@ import json
 import sys
 from pathlib import Path
 
+import yaml
+
 from .config import paths
 
 
@@ -340,7 +342,11 @@ def cmd_run(a) -> int:
     if a.all:
         names = list_datasets(p)
     elif a.family:
-        names = select_family(a.family, p)
+        names = select_family(a.family, p, include_manual=a.include_manual)
+        if not names:
+            print(f"族 {a.family} 里没有排了计划的成员"
+                  f"（全是手动维护？加 --include-manual 一起跑）")
+            return 2
     elif a.dataset:
         names = [a.dataset]
     else:
@@ -402,19 +408,180 @@ def cmd_rm(a) -> int:
 
 
 def cmd_health(a) -> int:
-    from .external import run_health
+    from . import dashboard
+    from .external import load_report, run_health
+    from .health import dataset_freshness, digest
     p = paths()
-    rep = run_health(p, only=a.source)
-    s = rep["summary"]
-    lines = [f"外部源健康：ok={s['ok']} warn={s['warn']} fail={s['fail']} / {s['total']}"]
-    for r in rep["results"]:
+
+    if a.broken:
+        # /fix-source 的唯一入口：只给要人管的东西，不重新探测（报告是监控刚跑的）
+        d = digest(p)
+        lines = [f"检查于 {d['checked_at'] or '（还没跑过 dw health）'}"]
+        for b in d["broken"]:
+            mark = "【已熔断】" if b["quarantined"] else ""
+            lines.append(f"  [{b['status'].upper()}]{mark} {b['source']}: {b['reason']}")
+            lines.append(f"        受影响: {'、'.join(b['consumers']) or '（无）'}"
+                         f"  自 {b['since'] or '?'} 起")
+        for x in d["pending_ack"]:
+            lines.append(f"  [待确认] {x['source']}: {x['kind']} 变更")
+        for s_ in d["stale_datasets"]:
+            lines.append(f"  [{s_['status'].upper()}] {s_['dataset']}: {s_['reason']}")
+        if len(lines) == 1:
+            lines.append("  全绿，没有要处理的。")
+        out(d, a.json, "\n".join(lines))
+        return 1 if d["broken"] else 0
+
+    rep = (load_report(p) if a.no_check
+           else run_health(p, only=a.source, probe=not a.no_probe, force_docs=a.docs))
+    s = rep.get("summary", {})
+    lines = [f"外部源健康：ok={s.get('ok', 0)} warn={s.get('warn', 0)} "
+             f"fail={s.get('fail', 0)} / {s.get('total', 0)}"]
+    for r in rep.get("results", []):
         if r["status"] == "ok" and not a.verbose:
             continue
         lines.append(f"  [{r['status'].upper()}] {r['source']}: {r['reason'] or '-'}")
-    if s["fail"] or s["warn"]:
+    stale = [d for d in dataset_freshness(p) if d["status"] != "ok"]
+    for d in stale if (a.verbose or True) else []:
+        lines.append(f"  [{d['status'].upper()}] {d['dataset']}: {d['reason']}")
+    if a.html or a.open:
+        f = dashboard.build(p)
+        lines.append(f"面板已生成：{f}")
+        if a.open:
+            import webbrowser
+            webbrowser.open(Path(f).resolve().as_uri())
+    if s.get("fail") or s.get("warn") or stale:
         lines.append("→ 在 Claude Code 里运行 `/fix-source` 修复（会先给计划再动手）")
     out(rep, a.json, "\n".join(lines))
-    return 1 if s["fail"] else 0
+    return 1 if s.get("fail") else 0
+
+
+def cmd_source(a) -> int:
+    """只取一个外部源的片段 —— 别把整份 external_sources.yaml 读进上下文。"""
+    from .external import load_sources
+    src = load_sources().get(a.source)
+    if src is None:
+        raise KeyError(f"external_sources.yaml 中无源 '{a.source}'")
+    if a.fields:
+        want = [f.strip() for f in a.fields.split(",") if f.strip()]
+        src = {k: v for k, v in src.items() if k in want}
+    text = yaml.safe_dump({a.source: src}, allow_unicode=True, sort_keys=False, width=100)
+    out(src, a.json, text.rstrip())
+    return 0
+
+
+def cmd_fixlog(a) -> int:
+    """修复尝试记账：连续 3 次失败自动熔断，避免同一个源被反复瞎试。"""
+    from .health import ATTEMPT_LIMIT, attempts_clear, attempts_load, attempts_record
+    p = paths()
+    if a.clear:
+        attempts_clear(a.source, p)
+        out({"source": a.source, "cleared": True}, a.json, f"{a.source}: 已解除熔断，计数清零")
+        return 0
+    if a.outcome:
+        rec = attempts_record(a.source, a.outcome, a.note or "", p)
+    else:
+        rec = attempts_load(p).get(a.source) or {"fails": 0, "quarantined": False, "log": []}
+    lines = [f"{a.source}: 连续失败 {rec['fails']}/{ATTEMPT_LIMIT}"
+             f"{'  ⛔ 已熔断，停止自动修复，交人工' if rec['quarantined'] else ''}"]
+    lines += [f"  {e['at']}  {e['outcome']}  {e.get('note', '')}"
+              for e in (rec.get("log") or [])[-5:]]
+    out(rec, a.json, "\n".join(lines))
+    return 0
+
+
+def cmd_ack(a) -> int:
+    """确认 schema / 文档变更：修了，或判定无影响。确认的是当时那个版本，不是永久静音。"""
+    from .external import _load_state, load_report, load_sources
+    from .health import ack_load, ack_record
+    p = paths()
+    if a.list:
+        ack = ack_load(p)
+        rec = ack.get(a.source) or {}
+        mine = [u for u in (load_sources().get(a.source) or {}).get("docs") or []]
+        lines = []
+        if rec.get("schema"):
+            lines.append(f"  schema  {rec['schema']['at']}  {rec['schema']['note']}")
+        for u in mine:                       # 文档确认按 URL 记，可能是别的源判的
+            e = (ack.get("_docs") or {}).get(u)
+            if e:
+                lines.append(f"  docs    {e['at']}  {u}\n          {e['note']}"
+                             f"（by {e.get('by_source', '?')}）")
+        out(rec, a.json, "\n".join(lines) or "（该源还没有任何确认记录）")
+        return 0
+
+    done = []
+    if a.schema:
+        r = next((x for x in load_report(p).get("results", [])
+                  if x["source"] == a.source), {})
+        h = r.get("schema_hash") or (_load_state("schemas.json", p).get(a.source) or {}).get(
+            "current")
+        if not h:
+            raise ValueError(f"{a.source} 当前没有可确认的 schema（没配 schema_probe？"
+                             f"先跑 dw health）")
+        ack_record(a.source, "schema", h, a.note, p=p)
+        done.append(f"schema={h}")
+    src_docs = (load_sources().get(a.source) or {}).get("docs") or []
+    urls = (list(src_docs) if a.docs_all else []) + ([a.docs] if a.docs else [])
+    for u in urls:
+        entry = _load_state("docs.json", p).get(u) or {}
+        h = entry.get("current") or entry.get("baseline")
+        if not h:
+            raise ValueError(f"{a.source} 的文档 {u} 还没抓到过内容")
+        ack_record(a.source, "docs", h, a.note, url=u, p=p)
+        done.append(f"docs:{u}={h}")
+    if not done:
+        raise ValueError("要确认什么？给 --schema 或 --docs <url> / --docs-all")
+    out({"source": a.source, "acked": done, "note": a.note}, a.json,
+        f"{a.source}: 已确认 {'、'.join(done)}\n  理由：{a.note}\n"
+        f"  （上游再变一次会重新报 warn —— 确认不是永久静音）")
+    return 0
+
+
+def cmd_sla(a) -> int:
+    """改某个 dataset 的调度声明，可顺带注册/卸载 Windows 计划任务。"""
+    from . import schedule as S
+    p = paths()
+    schedule_ = S._MISSING
+    if a.manual:
+        schedule_, runner = None, "manual"
+    else:
+        runner = a.runner
+        if a.schedule:
+            S.parse_cron(a.schedule)          # 先校验再落盘
+            schedule_ = a.schedule
+    changed = S.set_sla(a.dataset, p, schedule=schedule_,
+                        freshness=a.freshness, runner=runner)
+    lines = [f"{a.dataset}: " + ("；".join(changed) if changed else "合约无变化")]
+
+    if a.install or a.uninstall:
+        remove = bool(a.uninstall) or runner in ("manual", "family")
+        cron = None if remove else (a.schedule or _contract_cron(a.dataset, p))
+        cmd = S.task_command(a.dataset, cron, p, remove=remove)
+        if a.dry_run:
+            lines.append("将执行（--dry-run 未执行）：" + " ".join(cmd))
+        else:
+            r = S.apply_task(a.dataset, cron, p, remove=remove)
+            if r["note"]:
+                lines.append(r["note"])
+            else:
+                lines.append(("已" + ("卸载" if remove else "注册") + "计划任务："
+                              if r["ok"] else "计划任务命令失败：") + r["cmd"])
+                if r["output"]:
+                    lines.append("  " + r["output"].replace("\n", "\n  "))
+    out({"dataset": a.dataset, "changed": changed}, a.json, "\n".join(lines))
+    return 0
+
+
+def _contract_cron(dataset: str, p) -> str | None:
+    from .contract import load_contract
+    return load_contract(dataset, p).sla.schedule
+
+
+def cmd_panel(a) -> int:
+    """起本地控制台：面板上的计划列可以开关/改时间/立即运行。"""
+    from . import panel
+    panel.serve(paths(), port=a.port, open_browser=a.open)
+    return 0
 
 
 def cmd_sql(a) -> int:
@@ -487,16 +654,41 @@ def _ingest_problems(name: str, p) -> list[str]:
     return out_
 
 
+def _source_problems(p) -> list[str]:
+    """外部源侧的体检：schema 变更测不到 / 有源被熔断 / 有变更没人确认。"""
+    from .external import load_sources
+    from .health import attempts_load, digest
+    out_: list[str] = []
+    for sid, src in load_sources(p).items():
+        # 探测 URL ≠ 取数 URL 又没配探针 = 上游改字段这件事对本仓完全隐形
+        # 写了 `schema_probe: ~ # 原因` 就是明确声明过「这个源探不了」，不再唠叨
+        if "schema_probe" not in src and src.get("url_template"):
+            out_.append(f"{sid}: 探测 URL 与 url_template 不是同一个端点，又没配 "
+                        f"schema_probe —— 上游改字段测不到（见 fix-source skill）")
+    for sid, rec in attempts_load(p).items():
+        if rec.get("quarantined"):
+            out_.append(f"{sid}: 已熔断（连续 {rec.get('fails')} 次修复失败），"
+                        f"需人工介入后 `dw fixlog {sid} --clear`")
+    pending = digest(p).get("pending_ack", [])
+    if pending:
+        out_.append(f"有 {len(pending)} 项 schema/文档变更待确认"
+                    f"（dw health --broken；判完 dw ack ... --note）")
+    return out_
+
+
 def cmd_doctor(a) -> int:
     """一次性体检：结构、生成物是否过期、悬空引用、未跑的 dataset。"""
     from .contract import load_all
     from . import graph as G
     from . import io as dwio
+    from .health import dataset_freshness
     from .scaffold import gen_schema_py
     p = paths()
     contracts = load_all(p)
-    g = G.load(p)
+    G.load(p)
     problems = []
+    # 新鲜度只有一份实现（health.dataset_freshness），面板和 doctor 共用同一口径
+    stale = {d["dataset"]: d for d in dataset_freshness(p) if d["status"] != "ok"}
     for name, c in contracts.items():
         d = p.dataset_dir(name)
         f = d / "schema.py"
@@ -513,6 +705,10 @@ def cmd_doctor(a) -> int:
                 problems.append(f"{name}: 上游 dataset '{u.ref}' 不存在")
         problems.extend(_memory_problems(name, p))
         problems.extend(_ingest_problems(name, p))
+        # 没数据是更根本的问题（上面已单报），别再重复喊一遍新鲜度
+        if name in stale and dwio.exists(name, p):
+            problems.append(f"{name}: {stale[name]['reason']}")
+    problems.extend(_source_problems(p))
     if not p.index_md.is_file():
         problems.append("data_contracts/INDEX.md 缺失（跑 dw index）")
     text = "\n".join(f"  - {x}" for x in problems) or "  一切正常"
@@ -593,6 +789,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("dataset", nargs="?")
     s.add_argument("--family"); s.add_argument("--all", action="store_true")
     s.add_argument("--stage", help="ingest / transform / test，可逗号组合")
+    s.add_argument("--include-manual", action="store_true",
+                   help="--family 时把 sla.schedule 为空（手动维护）的成员也带上")
     s.set_defaults(func=cmd_run)
 
     s = sub.add_parser("rm", help="删除 dataset（默认 dry-run）")
@@ -602,9 +800,54 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--force", action="store_true", help="有下游也强删")
     s.set_defaults(func=cmd_rm)
 
-    s = sub.add_parser("health", help="外部源健康监控")
+    s = sub.add_parser("health", help="外部源健康监控 + 健康面板")
     s.add_argument("--source"); s.add_argument("--verbose", action="store_true")
+    s.add_argument("--html", action="store_true", help="渲染 .health/dashboard.html")
+    s.add_argument("--open", action="store_true", help="渲染并用浏览器打开面板")
+    s.add_argument("--broken", action="store_true",
+                   help="只列要人管的（配 --json 即 /fix-source 的入口数据），不重新探测")
+    s.add_argument("--docs", action="store_true", help="强制重抓技术文档（默认 24h 一次）")
+    s.add_argument("--no-probe", action="store_true", help="跳过 schema/文档探针，只做 HEAD")
+    s.add_argument("--no-check", action="store_true", help="不探测，直接用上轮报告")
     s.set_defaults(func=cmd_health)
+
+    s = sub.add_parser("source", help="只看某个外部源的配置片段（别读整份 yaml）")
+    s.add_argument("source")
+    s.add_argument("--fields", help="url,url_template,headers,note,schema_probe,docs,...")
+    s.set_defaults(func=cmd_source)
+
+    s = sub.add_parser("fixlog", help="修复尝试记账（连续 3 次失败自动熔断）")
+    s.add_argument("source")
+    s.add_argument("outcome", nargs="?", choices=["ok", "fail"])
+    s.add_argument("--note", default="")
+    s.add_argument("--clear", action="store_true", help="人工解除熔断")
+    s.set_defaults(func=cmd_fixlog)
+
+    s = sub.add_parser("ack", help="确认 schema / 技术文档变更（修了，或判定无影响）")
+    s.add_argument("source")
+    s.add_argument("--schema", action="store_true")
+    s.add_argument("--docs", metavar="URL")
+    s.add_argument("--docs-all", action="store_true")
+    s.add_argument("--note", default="", help="为什么可以放过 / 怎么修的（必填，就是留痕）")
+    s.add_argument("--list", action="store_true", help="看历史确认记录")
+    s.set_defaults(func=cmd_ack)
+
+    s = sub.add_parser("sla", help="改调度声明（schedule / runner / freshness）并可注册任务")
+    s.add_argument("dataset")
+    s.add_argument("--schedule", help='cron，如 "0 15 * * *"')
+    s.add_argument("--manual", action="store_true", help="改成手动（等价 --runner manual）")
+    s.add_argument("--runner", choices=["family", "own", "manual"],
+                   help="family=跟族任务跑；own=自己一个 Windows 任务；manual=只手动")
+    s.add_argument("--freshness", help="如 30d")
+    s.add_argument("--install", action="store_true", help="顺带注册/更新 Windows 任务")
+    s.add_argument("--uninstall", action="store_true", help="顺带卸载该 dataset 的独立任务")
+    s.add_argument("--dry-run", action="store_true", help="只打印将要执行的任务命令")
+    s.set_defaults(func=cmd_sla)
+
+    s = sub.add_parser("panel", help="本地健康面板控制台（可开关定时/改时间/立即运行）")
+    s.add_argument("--port", type=int, default=8787)
+    s.add_argument("--open", action="store_true", help="顺便用浏览器打开")
+    s.set_defaults(func=cmd_panel)
 
     s = sub.add_parser("sql", help="跨 dataset DuckDB 查询")
     s.add_argument("query")

@@ -1,19 +1,18 @@
-<#
+﻿<#
 .SYNOPSIS
     注册/卸载 Windows 计划任务：外部源监控，以及各 dataset / family 的定时刷新。
 
 .DESCRIPTION
     任务命名规范： dw-<dataset>-<stage>   例如 dw-example__gdp-all
-                   dw-family-<family>    例如 dw-family-example（-Family 用）
+                   dw-family-<family>    例如 dw-family-polygon（-Family 用）
                    dw-monitor            外部源健康监控
     del-dataset skill 依赖这个命名规范来精确卸载，请勿自行改名。
 
     **优先用 -Family，而不是给同一个 family 里的每个 dataset 各开一个 -Dataset 任务。**
     `dw run --family X` 在同一个进程里按拓扑序跑完整族，天然避免了「上游任务还没
     跑完、下游任务的定时器已经到点」这种竞态 —— 尤其是当 family 内多个 dataset
-    的 sla.schedule 写的是同一个时间点时（常见于同一份原始响应派生出多张表的
-    family——那是"整族一起跑"的设计意图，不是"每个 dataset 各自的定时器都在
-    同一时刻触发"）。
+    的 sla.schedule 写的是同一个时间点时（例如本仓 polygon 族 6 个 dataset 都
+    写着 22:00，那是"整族一起跑"的设计意图，不是"六个独立任务都在 22:00 触发"）。
     -Dataset 仍然保留，给不属于任何 family、或明确要单独刷新节奏的场景用。
 
     日志：会把 `dw run` 的 stdout/stderr 追加写到仓库根目录的 `logs\<TaskName>.log`
@@ -24,14 +23,14 @@
     # 每天 07:00 检查外部源健康
     .\scripts\install_schedule.ps1 -Monitor -Time 07:00
 
-    # 整族刷新（推荐）：example 每天 15:00
-    .\scripts\install_schedule.ps1 -Family example -Time 15:00
+    # 整族刷新（推荐）：polygon 每天 15:00
+    .\scripts\install_schedule.ps1 -Family polygon -Time 15:00
 
     # 只刷新单个 dataset 的 transform 阶段，每周一
     .\scripts\install_schedule.ps1 -Dataset example__gdp_growth -Stage transform -Weekly Monday -Time 06:45
 
     # 卸载
-    .\scripts\install_schedule.ps1 -Family example -Remove
+    .\scripts\install_schedule.ps1 -Family polygon -Remove
     .\scripts\install_schedule.ps1 -Dataset example__gdp -Remove
     .\scripts\install_schedule.ps1 -Monitor -Remove
 

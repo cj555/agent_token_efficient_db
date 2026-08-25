@@ -72,15 +72,18 @@ def plan(dataset: str, p: Paths | None = None) -> dict:
 def _find_scheduled_tasks(dataset: str) -> list[str]:
     """查 Windows 计划任务里 dw-<dataset>-* 的条目。非 Windows 返回空。"""
     try:
+        # schtasks 用系统代码页输出中文任务名，默认的 cp1252 解码会抛异常导致
+        # stdout 变成 None —— 这里显式解码并容错，删除流程不该被任务名编码搞挂。
         r = subprocess.run(["schtasks", "/query", "/fo", "csv", "/nh"],
-                           capture_output=True, text=True, timeout=20)
+                           capture_output=True, text=True, timeout=20,
+                           encoding="utf-8", errors="replace")
     except (OSError, subprocess.SubprocessError):
         return []
     if r.returncode != 0:
         return []
     prefix = f"dw-{dataset}-"
     found = []
-    for line in r.stdout.splitlines():
+    for line in (r.stdout or "").splitlines():
         name = line.split(",")[0].strip('" ').lstrip("\\")
         if name.startswith(prefix) or name == f"dw-{dataset}":
             found.append(name)

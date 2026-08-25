@@ -15,11 +15,28 @@ Polars 做 ETL、DuckDB 做跨表 SQL、PyArrow schema 作为类型真源。
 | 谁依赖它 / 它依赖谁 | `dw deps <ds> --down` / `--up` | 递归读合约 |
 | 改这一列会影响谁 | `dw impact <ds> --column c` | 全仓 grep |
 | 数据对不对 | `dw validate <ds>` | 读数据抽样目测 |
-| 外部源健康吗 | `cat .health/report.json` | 自己去 curl |
+| 外部源健康吗 | `dw health --broken --json` | `cat .health/report.json` / 自己去 curl |
+| 某个外部源怎么配的 | `dw source show <sid>` | 读整份 external_sources.yaml |
+| 整体状况给人看 | `dw health --html --open`（面板 `.health/dashboard.html`） | 逐个文件翻 |
+| 在面板上改计划/立即跑 | `dw panel --open`（本地控制台，只绑 127.0.0.1） | 手写 schtasks |
+| 改某表的调度声明 | `dw sla <ds> --manual` / `--runner own --schedule "30 9 * * *" --install` | 手改 contract.yaml |
 | 仓库整体有没有问题 | `dw doctor` | 逐个目录检查 |
 
 三层渐进披露：`data_contracts/INDEX.md`（全仓概览，最先读）→ `graph.json`（局部查询，用 `dw deps/impact` 而非直接读）→ 单个 `contract.yaml`（确有必要时才展开）。
 **永远不要一次性读整个 `data_contracts/` 或所有 dataset 的代码。**
+
+## 谁负责按时跑一张表
+
+合约 `sla.runner` 三档，决定 `dw run --family` 会不会带上它、以及该不该有独立任务：
+
+| runner | 含义 | 独立 Windows 任务 |
+|---|---|---|
+| `family`（默认） | 跟着 `dw-family-<族>` 一起跑（同进程按拓扑序，天然避免上下游竞态） | 不该有 |
+| `own` | 自己一个 `dw-<ds>-<stage>` 任务，族任务不带它（适合节奏不同的大表） | 有 |
+| `manual` | 都不跑，只有点名 `dw run <ds>` 才动；`schedule` 写 null | 不该有 |
+
+改这三档用 `dw sla`（会同时改合约和注册/卸载任务），或在 `dw panel` 的面板上点。
+手动/独立的表不会被族任务带跑 —— 要一起跑加 `dw run --family X --include-manual`。
 
 ## 结构不变量
 
@@ -99,3 +116,11 @@ Polars 做 ETL、DuckDB 做跨表 SQL、PyArrow schema 作为类型真源。
 ```bash
 .venv/Scripts/dw.exe <cmd>        # Windows；或先激活 venv 后直接用 dw
 ```
+
+## LSP（可选）
+
+本项目已配置 Claude Code 内置 LSP 代码智能（Pyright），换机器需要重新装：
+
+1. 交互式终端里跑一次 `/plugin install pyright-lsp@claude-plugins-official`
+2. `npm install -g pyright`（提供 `pyright-langserver` 二进制，需在系统 PATH 上）
+3. 若 `/plugin` 的 Errors 标签出现 `Executable not found in $PATH`，说明第 2 步没生效

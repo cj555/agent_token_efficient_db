@@ -34,6 +34,19 @@ dw show <候选> --fields meta,schema   # 只在确有候选时展开
 新外部源要登记进 `data_contracts/external_sources.yaml`（先看一眼已有条目，可能已存在可复用的 source id —— 共享 source 的多个 dataset 不会重复下载）。
 凭据一律写 `${ENV_VAR}` 占位，**绝不写明文**。
 
+登记新源时，除了 url / freshness / schedule，还要**在计划里给出这两项并请用户自检**
+（漏了的后果是：上游哪天改字段、改文档，本仓完全不知道，只能等 ingest 炸）：
+
+| 字段 | 作用 | 怎么给 |
+|---|---|---|
+| `schema_probe` | 结构基线探针：抓一条真实样本（`limit=1`），只对 key 路径集合做哈希，值变不误报 | 你**推荐**一个廉价取数 URL 与 `node`（如 `results[0]`），标明推荐依据；用户确认后写入 |
+| `docs` | 上游技术文档页 URL，监控会抓正文比对，变了在面板上标出并存 diff | 你**推荐**官方文档地址并说明来源（搜到的/文档里链的）；**没把握就留空**，不要拿看着像的凑数 |
+
+规矩：推荐值必须标明「这是推荐，请你确认」，**不要当成既定事实直接写死**。
+用户拿不准就留空，并在计划里写清留空的后果（该源的 schema / 文档变更测不到，
+面板会标灰「未监控」）。取数要带具体日期/大参数、或取的是非表格资产（纯文本、PDF）的源，
+本来就配不了探针，直接在 `note` 里写明为什么没配。
+
 ### 4. 做 family 拆分设计 ★ 最关键的一步
 按 `references/splitting.md` 的四问决定拆几个 dataset。产出一张表交给用户看：
 
@@ -44,16 +57,16 @@ dw show <候选> --fields meta,schema   # 只在确有候选时展开
 
 `ingest.py` 对外部 API 的抓取永远不能无界——`max_records: null` + 分页循环
 等于"每次跑都拉全部历史"，在低速率限制下会把"每日增量"跑成几小时的任务，
-还可能在写盘前把整批结果攒进内存（同类风险：把所有页攒进内存再一次性落盘，量一大就会撑爆预算，应边拉边落盘）。
+还可能在写盘前把整批结果攒进内存（同类风险见 pm__event 的 Kalshi 修复）。
 
 先看这份数据的边界怎么天然形成，从下面选一种写进 config.yaml 的 ingest 段
 （选完在计划里给用户看，别自己拍板）：
 
 | 策略 | 适用场景 | 参考实现 |
 |---|---|---|
-| ndays | 按最近 N 个自然/工作日回看，文件存在即跳过 | 适合"按天产出"的源（如日线行情） |
-| lookback_days | 按日期字段过滤候选，可叠加二级上限 | 适合按日期字段筛选的备案/记录类源 |
-| max_records | 分页 API，结果按时间倒序，拉够最近 N 条就停 | 适合无日期参数、只能翻页的 API |
+| ndays | 按最近 N 个自然/工作日回看，文件存在即跳过 | polygon__stk_eod/ingest.py |
+| lookback_days | 按日期字段过滤候选，可叠加二级上限 | sec__etf_holding/ingest.py |
+| max_records | 分页 API，结果按时间倒序，拉够最近 N 条就停 | polygon__stk_dividend/ingest.py |
 | 无边界（全量） | 仅当数据源体量小、一次全量几秒内完事 | 需在注释里写明原因，仍要给 max_records 一个显式小整数兜底 |
 
 不要保留模板里的占位注释就直接落地——必须替换成选定的具体字段和数值，
@@ -132,13 +145,21 @@ schtasks /query /fo table /nh | findstr dw-    # 看这台机器已经在什么�
 `memory_budget_gb` 是共享的，见 `warehouse.yaml`）。没有明确上游约束、
 用户也没指定时间时，默认排在夜间空闲时段。
 
+合约里用 `sla.runner` 声明谁负责跑它（`family` 默认 / `own` 自己一个任务 / `manual` 只手动），
+`dw run --family` 只会带上 `runner: family` 且排了 `schedule` 的成员 —— 声明和实际必须一致，
+否则「改成手动」只是句空话。
+
 ```bash
+dw sla <ds> --runner family --schedule "0 15 * * *"              # 跟族跑：只写声明，任务在族那一层
 .\scripts\install_schedule.ps1 -Family <name> -Time <HH:mm>      # 推荐：整族一起
-.\scripts\install_schedule.ps1 -Dataset <name> -Time <HH:mm>     # 独立 dataset
+dw sla <ds> --runner own --schedule "30 9 * * *" --install       # 独立 dataset：一条命令改声明 + 注册任务
+dw sla <ds> --manual --uninstall                                 # 改手动 + 卸掉它自己的任务
 .\scripts\install_schedule.ps1 -Monitor -Time 07:00              # 外部源健康监控（全仓只需一次）
 ```
 执行前把**任务名、时间、为什么选这个时间（相对哪个上游/哪些已有任务错开）**
-念给用户确认，再动手注册。任务输出会自动写进 `logs/<TaskName>.log`。
+念给用户确认，再动手注册（`dw sla ... --dry-run` 会只打印将要执行的命令）。
+任务输出会自动写进 `logs/<TaskName>.log`。用户也可以自己开 `dw panel --open`
+在面板上改这些。
 
 ## 参考
 - `references/splitting.md` —— 拆分四问 + SEC 案例（需要判断拆几个表时读）
