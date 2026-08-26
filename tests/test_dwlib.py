@@ -15,6 +15,7 @@ from dwlib.adopt import adopt, infer
 from dwlib.config import Paths, find_repo_root, load_dotenv
 from dwlib.contract import Contract, bump, load_contract, parse_contract_file
 from dwlib.dashboard import render
+from dwlib.io import preview
 from dwlib.external import (
     _dig, expand_env, html_to_text, json_key_paths, parse_duration, schema_hash,
 )
@@ -508,6 +509,63 @@ def test_dashboard_live_mode_adds_controls():
     assert "<button class=\"save\">" not in render(st)          # 只读模式不给按钮
     live = render(st, live_token="t0k3n")
     assert "<button class=\"save\">" in live and "t0k3n" in live
+
+
+def test_preview_takes_latest_partition_tail(repo: Paths):
+    """分区表只扫「最新」那个分区，取末尾几行，不做全表 sort。"""
+    d = repo.curated("demo__part")
+    for year, base in (("2024", 0), ("2025", 100)):
+        pd = d / f"year={year}"
+        pd.mkdir(parents=True)
+        pl.DataFrame({"id": [base + i for i in range(5)],
+                      "v": [f"v{base + i}" for i in range(5)]}
+                     ).write_parquet(pd / "part-00000.parquet")
+    pv = preview("demo__part", n=2, p=repo)
+    assert pv["error"] is None
+    assert pv["partition"] == "year=2025"
+    assert [r[0] for r in pv["rows"]] == ["103", "104"]      # 末尾 2 行，不是开头
+    assert "year" in pv["columns"]                            # 分区列也带出来
+
+
+def test_preview_trims_columns_and_long_cells(repo: Paths):
+    _write_curated(repo, "demo__wide", pl.DataFrame(
+        {**{f"c{i}": [i] for i in range(12)}, "long": ["x" * 200]}))
+    pv = preview("demo__wide", n=5, max_cols=3, p=repo)
+    assert len(pv["columns"]) == 3
+    assert pv["total_columns"] == 13 and pv["truncated_cols"] is True
+    narrow = preview("demo__wide", n=5, max_cols=13, p=repo)
+    assert narrow["truncated_cols"] is False
+    assert narrow["rows"][0][-1].endswith("…") and len(narrow["rows"][0][-1]) <= 61
+
+
+def test_preview_returns_error_instead_of_raising_when_no_data(repo: Paths):
+    pv = preview("demo__never_run", p=repo)
+    assert pv["error"] and "dw run" in pv["error"]
+    assert "rows" not in pv
+
+
+def test_dashboard_renders_preview_rows_and_escapes_cells(repo: Paths):
+    st = {"freshness": [{"dataset": "demo__a", "status": "ok", "freshness": "1d",
+                         "schedule": None, "runner": "manual", "family": "demo",
+                         "last_run": "2026-08-25T15:00:00", "reason": ""}],
+          "previews": {"demo__a": {"columns": ["id", "note"],
+                                   "rows": [["1", "<script>alert(1)</script>"]],
+                                   "total_columns": 5, "truncated_cols": True,
+                                   "partition": "year=2025", "error": None}}}
+    html_ = render(st)
+    assert 'class="pv"' in html_ and "<details>" in html_
+    assert "最新分区 year=2025 末尾 1 行" in html_ and "共 5 列，显示前 2" in html_
+    assert "<script>alert(1)</script>" not in html_
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html_
+
+
+def test_dashboard_preview_row_shows_reason_when_unavailable():
+    st = {"freshness": [{"dataset": "demo__a", "status": "warn", "freshness": "1d",
+                         "schedule": None, "runner": "manual", "family": "demo",
+                         "last_run": None, "reason": "从没跑过"}],
+          "previews": {"demo__a": {"error": "尚无 curated 数据（先跑 `dw run demo__a`）"}}}
+    html_ = render(st)
+    assert "尚无 curated 数据" in html_ and "<details>" not in html_.split("pv")[-1]
 
 
 # ---------------- 调度：cron 转换与合约行级改写 ----------------

@@ -121,6 +121,62 @@ def vectors(dataset: str, column: str = "vector", p: Paths | None = None):
     return np.asarray(flat).reshape(-1, dim)
 
 
+_PREVIEW_CELL_MAX = 60
+
+
+def _latest_part_dir(root: Path) -> Path | None:
+    """挑「最新」的那个分区目录。
+
+    分区目录名是 year=2024 / date=2024-01-01 这种零填充形式，字典序即时间序，
+    所以直接取排序后的最后一个。非分区表只有 root 自己，行为一致。
+    """
+    dirs = {f.parent for f in root.rglob("*.parquet")}
+    return max(sorted(dirs), default=None)
+
+
+def preview(dataset: str, n: int = 5, max_cols: int = 8,
+            p: Paths | None = None) -> dict:
+    """取 curated 表最新分区末尾 n 行，做成可直接渲染的片段。
+
+    只扫最新一个分区、惰性 tail，不做全表 sort —— 面板要的是「看一眼数据长啥样」，
+    不值得为它把大表拉进内存（见 CLAUDE.md 内存纪律）。
+    行序即写入序，所以措辞是「最新分区末尾 N 行」，不承诺按时间排序。
+    """
+    pl = _pl()
+    pp = p or paths()
+    root = curated_path(dataset, pp)
+    if not exists(dataset, pp):
+        return {"error": f"尚无 curated 数据（先跑 `dw run {dataset}`）"}
+    part = _latest_part_dir(root)
+    if part is None:
+        return {"error": f"尚无 curated 数据（先跑 `dw run {dataset}`）"}
+
+    kw: dict[str, Any] = {"hive_partitioning": True}
+    hs = _hive_schema(dataset, pp)
+    if hs:
+        kw["hive_schema"] = hs
+    lf = pl.scan_parquet(str(part / "*.parquet"), **kw)
+    names = lf.collect_schema().names()
+    cols = names[:max_cols]
+    df = lf.select(cols).tail(n).collect()
+
+    def cell(v: Any) -> str:
+        if v is None:
+            return "—"
+        s = str(v)
+        return s[:_PREVIEW_CELL_MAX] + "…" if len(s) > _PREVIEW_CELL_MAX else s
+
+    rel = part.relative_to(root).as_posix()
+    return {
+        "columns": cols,
+        "rows": [[cell(v) for v in row] for row in df.rows()],
+        "total_columns": len(names),
+        "truncated_cols": len(names) > len(cols),
+        "partition": rel if rel != "." else "",
+        "error": None,
+    }
+
+
 def connect(p: Paths | None = None, datasets: Iterable[str] | None = None):
     """DuckDB 连接，所有 curated 表注册为同名视图。"""
     import duckdb

@@ -444,7 +444,7 @@ def cmd_health(a) -> int:
     for d in stale if (a.verbose or True) else []:
         lines.append(f"  [{d['status'].upper()}] {d['dataset']}: {d['reason']}")
     if a.html or a.open:
-        f = dashboard.build(p)
+        f = dashboard.build(p, previews=not a.no_preview)
         lines.append(f"面板已生成：{f}")
         if a.open:
             import webbrowser
@@ -809,6 +809,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--docs", action="store_true", help="强制重抓技术文档（默认 24h 一次）")
     s.add_argument("--no-probe", action="store_true", help="跳过 schema/文档探针，只做 HEAD")
     s.add_argument("--no-check", action="store_true", help="不探测，直接用上轮报告")
+    s.add_argument("--no-preview", action="store_true",
+                   help="面板不内嵌数据预览（表很多时更快）")
     s.set_defaults(func=cmd_health)
 
     s = sub.add_parser("source", help="只看某个外部源的配置片段（别读整份 yaml）")

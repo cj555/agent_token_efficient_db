@@ -7,7 +7,7 @@ ingest:
   skip_if_fingerprint_match: true # raw manifest 命中即跳过下载（多 dataset 共享 source 时省带宽）
   # 增量抓取的边界策略 —— 必须三选一并删掉其余两个，不能是 null/不设：
   #   ndays: 20            # 按最近 N 个自然/工作日回看（范例：polygon__stk_eod）
-  #   lookback_days: 45    # 按日期窗口过滤候选，date >= today - N（范例：sec__etf_holding）
+  #   lookback_days: 45    # 按日期窗口过滤候选，date >= today - N（范例：sec__filing_text）
   #   max_records: TODO    # 分页硬上限，配合 dwlib.http.paginate(max_records=...)（范例：polygon__stk_dividend）
   # 三者都不适用（数据源天生就小，一次全量几秒内拉完）时，在这里写清楚原因，
   # 并仍然给 max_records 一个显式小整数兜底，不要留 null。

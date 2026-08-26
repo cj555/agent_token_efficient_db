@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import html
 import json
+from pathlib import Path
 from typing import Any
 
 from .config import Paths, paths
@@ -61,6 +62,16 @@ th{color:var(--muted);font-weight:500}tr:last-child td{border-bottom:0}
 .plan button{cursor:pointer}
 .plan button:hover{border-color:var(--muted)}
 .plan .jobline{flex-basis:100%;font-size:12px}
+tr.pv td{padding:0 10px 10px}
+tr.pv summary{font-size:12.5px}
+/* 表格是 auto 布局，单元格宽度由内容撑开，光给 overflow-x 不管用：
+   必须拿视口宽度给预览区封顶，否则宽表会把整页顶出横向滚动条。
+   减掉的是 body 左右 padding、单元格 padding 和滚动条 */
+.pvw{overflow-x:auto;border:1px solid var(--line);border-radius:8px;margin:6px 0 2px;
+  max-width:calc(100vw - 90px)}
+table.pvt{width:auto;min-width:100%;border:0;border-radius:0;
+  font-family:ui-monospace,Consolas,monospace}
+.pvt th,.pvt td{white-space:nowrap;padding:4px 9px;font-size:12px}
 """
 
 
@@ -291,6 +302,76 @@ def _timeline(history: list[str], sources: list[str], days: int = 7) -> str:
             f"<th>近 {days} 天每轮探测</th></tr>{''.join(rows)}</table>")
 
 
+def _preview_row(prev: dict | None) -> str:
+    """dataset 行下面挂的那一行数据预览。纯 <details>，不依赖 JS，file:// 也能展开。"""
+    if not prev:
+        return ""
+    if prev.get("error"):
+        return (f'<tr class="pv"><td colspan="7"><span class="muted">'
+                f'预览 · {_e(prev["error"])}</span></td></tr>')
+    cols, rows = prev.get("columns") or [], prev.get("rows") or []
+    if not cols or not rows:
+        return ('<tr class="pv"><td colspan="7"><span class="muted">'
+                '预览 · 最新分区里没有行</span></td></tr>')
+    part = prev.get("partition") or ""
+    where = f"最新分区 {part} " if part else ""
+    more = (f"，共 {prev.get('total_columns', len(cols))} 列，显示前 {len(cols)}"
+            if prev.get("truncated_cols") else "")
+    head = "".join(f"<th>{_e(c)}</th>" for c in cols)
+    body = "".join("<tr>" + "".join(f"<td>{_e(v)}</td>" for v in r) + "</tr>"
+                   for r in rows)
+    return (f'<tr class="pv"><td colspan="7"><details>'
+            f'<summary>预览 · {_e(where)}末尾 {len(rows)} 行{_e(more)}</summary>'
+            f'<div class="pvw"><table class="pvt"><tr>{head}</tr>{body}</table></div>'
+            f'</details></td></tr>')
+
+
+def _preview_sig(root: Path) -> str:
+    """curated 目录的指纹：最大 mtime + 文件数。变了才重新读 parquet。"""
+    files = list(root.rglob("*.parquet")) if root.is_dir() else []
+    if not files:
+        return ""
+    return f"{max(f.stat().st_mtime_ns for f in files)}:{len(files)}"
+
+
+def _previews(p: Paths, datasets: list[str]) -> dict:
+    """取各表的数据片段，带 .health/previews.json 缓存。
+
+    dw panel 的 GET / 每次请求都重新渲染整页，没缓存的话翻一次页就要把所有表的
+    parquet 都读一遍。任何一张表读挂了都只记进它自己的 error，不能拖垮整张面板。
+    """
+    from .io import preview
+
+    cache_f = p.health_dir / "previews.json"
+    try:
+        cache = json.loads(cache_f.read_text(encoding="utf-8"))
+    except Exception:
+        cache = {}
+    out: dict[str, dict] = {}
+    for ds in datasets:
+        sig = _preview_sig(p.curated(ds))
+        hit = cache.get(ds)
+        if hit and hit.get("sig") == sig:
+            out[ds] = hit.get("data") or {}
+            continue
+        try:
+            data = preview(ds, p=p)
+        except Exception as e:
+            data = {"error": f"{type(e).__name__}: {e}"[:200]}
+        out[ds] = data
+        cache[ds] = {"sig": sig,
+                     "at": dt.datetime.now().isoformat(timespec="seconds"),
+                     "data": data}
+    try:
+        p.health_dir.mkdir(parents=True, exist_ok=True)
+        cache_f.write_text(
+            json.dumps({k: v for k, v in cache.items() if k in out},
+                       ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+    return out
+
+
 def render(st: dict, live_token: str = "") -> str:
     """把一份 state 渲染成 HTML。live_token 非空 = 控制台模式，计划列出现按钮。"""
     report = st.get("report") or {}
@@ -301,6 +382,7 @@ def render(st: dict, live_token: str = "") -> str:
     consumers = st.get("consumers") or {}
     docs_idx = st.get("docs") or {}
     tasks = st.get("tasks") or {}
+    previews = st.get("previews") or {}
     results = report.get("results", [])
     s = report.get("summary", {})
     stale = [d for d in freshness if d["status"] != "ok"]
@@ -341,10 +423,13 @@ def render(st: dict, live_token: str = "") -> str:
         f'<td>{_e(d.get("last_run") or "—")}</td><td>{_e(d["freshness"])}</td>'
         f'<td>{_plan_cell(d, tasks, bool(live_token))}</td>'
         f'<td class="muted">{_e(d.get("reason") or "")}</td></tr>'
+        + _preview_row(previews.get(d["dataset"]))
         for d, _nxt, nxt_text in ordered)
 
+    # 内联 json 里的 `<` 一律转义：数据里出现 </script> 会直接把这段脚本截断
     data = json.dumps({"report": report, "freshness": freshness,
-                       "attempts": attempts}, ensure_ascii=False)
+                       "attempts": attempts, "previews": previews},
+                      ensure_ascii=False).replace("<", "\\u003c")
     live_js = _LIVE_JS.replace("__TOKEN__", live_token) if live_token else ""
     head_note = ("本页由 <code>dw panel</code> 提供，计划列可直接开关/改时间/立即运行"
                  if live_token else
@@ -381,7 +466,7 @@ def render(st: dict, live_token: str = "") -> str:
 """
 
 
-def state(p: Paths | None = None) -> dict:
+def state(p: Paths | None = None, previews: bool = True) -> dict:
     """面板要的全部数据。静态渲染和 dw panel 的 /api/state 共用这一份。"""
     from . import graph as G
     from .external import _load_state, load_report, load_sources
@@ -396,9 +481,11 @@ def state(p: Paths | None = None) -> dict:
         src = sources.get(r["source"]) or {}
         r["_docs"] = src.get("docs") or []
         r["_probe_declared"] = "schema_probe" in src
+    fresh = dataset_freshness(p)
     return {
         "report": rep,
-        "freshness": dataset_freshness(p),
+        "freshness": fresh,
+        "previews": _previews(p, [d["dataset"] for d in fresh]) if previews else {},
         "attempts": attempts_load(p),
         "history": tail_lines(p.health_dir / "history.jsonl", n=800),
         "digest": digest(p),
@@ -409,14 +496,15 @@ def state(p: Paths | None = None) -> dict:
     }
 
 
-def build_html(p: Paths | None = None, live_token: str = "") -> str:
-    return render(state(p), live_token)
+def build_html(p: Paths | None = None, live_token: str = "",
+               previews: bool = True) -> str:
+    return render(state(p, previews), live_token)
 
 
-def build(p: Paths | None = None) -> str:
+def build(p: Paths | None = None, previews: bool = True) -> str:
     """渲染只读面板并写出 dashboard.html，返回文件路径。"""
     p = p or paths()
     p.health_dir.mkdir(parents=True, exist_ok=True)
     f = p.health_dir / "dashboard.html"
-    f.write_text(build_html(p), encoding="utf-8")
+    f.write_text(build_html(p, previews=previews), encoding="utf-8")
     return str(f)
