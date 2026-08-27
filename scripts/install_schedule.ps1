@@ -26,6 +26,9 @@
     # 整族刷新（推荐）：polygon 每天 15:00
     .\scripts\install_schedule.ps1 -Family polygon -Time 15:00
 
+    # 每小时刷新一次（RSS 这类窗口很短的源）：news 族，每小时的 :20
+    .\scripts\install_schedule.ps1 -Family news -Hourly -Time 00:20
+
     # 只刷新单个 dataset 的 transform 阶段，每周一
     .\scripts\install_schedule.ps1 -Dataset example__gdp_growth -Stage transform -Weekly Monday -Time 06:45
 
@@ -49,6 +52,9 @@ param(
     [string]$Stage = "all",
     [string]$Time = "06:00",
     [string]$Weekly,
+    # 每小时跑一次（分钟取 -Time 的分钟位）。RSS 这类"上游窗口只有几十条、
+    # 跑得不够密就会漏"的源需要它；schtasks 的 daily 排不出这种节奏。
+    [switch]$Hourly,
     [switch]$Remove,
     [switch]$List
 )
@@ -100,8 +106,14 @@ if ($Monitor) {
     $FullCommand = "`"$Wrapper`" $TaskName -m dwlib.cli run $Dataset$StageArg"
 }
 
+if ($Weekly -and $Hourly) {
+    Write-Error "-Weekly 和 -Hourly 只能二选一"
+}
 if ($Weekly) {
     schtasks /create /tn $TaskName /tr $FullCommand /sc weekly /d $Weekly /st $Time /f
+} elseif ($Hourly) {
+    # /sc hourly /mo 1：从 $Time 起每小时触发一次，分钟位就是 $Time 的分钟位
+    schtasks /create /tn $TaskName /tr $FullCommand /sc hourly /mo 1 /st $Time /f
 } else {
     schtasks /create /tn $TaskName /tr $FullCommand /sc daily /st $Time /f
 }
@@ -110,5 +122,5 @@ Write-Host ""
 Write-Host "已注册计划任务：$TaskName"
 Write-Host "  命令：$FullCommand"
 Write-Host "  日志：logs\$TaskName.log"
-Write-Host "  时间：$(if ($Weekly) { "每周 $Weekly" } else { '每天' }) $Time"
+Write-Host "  时间：$(if ($Weekly) { "每周 $Weekly" } elseif ($Hourly) { '每小时，起于' } else { '每天' }) $Time"
 Write-Host "  卸载：.\scripts\install_schedule.ps1 $(if ($Monitor) { '-Monitor' } elseif ($Family) { "-Family $Family" } else { "-Dataset $Dataset -Stage $Stage" }) -Remove"
