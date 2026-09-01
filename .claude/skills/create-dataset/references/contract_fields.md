@@ -14,6 +14,8 @@ purpose: |                   # ★ dw search 的主检索面，写具体（是�
 
 grain: [accession]           # 主键列。grain 变了就该拆新 dataset
 partitions: []               # 例：[year] → hive 分区目录
+watermark: filed_date        # 可选；增量更新用的水位线列名，见 dw.watermark()。
+                              # 没有可回补历史的数据源不用声明这个字段。
 
 columns:
 - name: accession

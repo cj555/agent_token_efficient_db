@@ -84,6 +84,8 @@ class Contract(BaseModel):
     purpose: str = ""                      # 自然语言，dw search 的主检索面
     grain: list[str] = Field(default_factory=list)   # 主键列，决定拆分边界
     partitions: list[str] = Field(default_factory=list)
+    watermark: str | None = None      # 增量更新用的水位线列名；不声明就是 None，
+                                       # dw.watermark() 直接返回 None（数据源自己决定要不要用）
     columns: list[Column] = Field(default_factory=list)
     quality: list[QualityRule] = Field(default_factory=list)
     upstream: list[Upstream] = Field(default_factory=list)

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -86,8 +87,11 @@ def run_stage(dataset: str, stage: str, p: Paths | None = None) -> dict:
 
     f = d / f"{stage}.py"
     if not f.is_file():
-        return {"stage": stage, "ok": True, "skipped": True,
-                "secs": 0.0, "detail": f"无 {stage}.py（该 dataset 不需要此阶段）"}
+        if stage == "backfill":
+            detail = "无 backfill.py（可能是这个 dataset 不需要历史回补，也可能是还没建）"
+        else:
+            detail = f"无 {stage}.py（该 dataset 不需要此阶段）"
+        return {"stage": stage, "ok": True, "skipped": True, "secs": 0.0, "detail": detail}
     if cfg.get(stage, {}).get("enabled") is False:
         return {"stage": stage, "ok": True, "skipped": True,
                 "secs": 0.0, "detail": f"config.yaml 中 {stage}.enabled=false"}
@@ -95,12 +99,24 @@ def run_stage(dataset: str, stage: str, p: Paths | None = None) -> dict:
     try:
         from . import memory as mem
         declared = cfg.get("runtime", {}).get("memory_estimate_gb")
-        note = apply_thread_override(cfg)
-        mod = _load_module(f, f"dw_{dataset}_{stage}")
-        with mem.peak_rss() as tracker:
-            result = mod.main()
-        verdict = mem.check(tracker.peak, dataset, declared, p,
-                            baseline_bytes=tracker.baseline)
+        note = ""
+        if os.environ.get("DW_INPROCESS"):
+            # 进程内路径：只给调试和 pytest 用，峰值会被同进程里跑过的表污染
+            note = apply_thread_override(cfg)
+            mod = _load_module(f, f"dw_{dataset}_{stage}")
+            with mem.peak_rss() as tracker:
+                result = mod.main()
+            peak, baseline = tracker.peak, tracker.baseline
+        else:
+            got = _run_in_subprocess(dataset, stage, cfg, p)
+            if "error" in got:
+                detail = (f"未实现: {got['error']}" if got.get("not_implemented")
+                          else got["error"])
+                return {"stage": stage, "ok": False,
+                        "secs": round(time.time() - t0, 1), "detail": detail}
+            result, peak, baseline = got["result"], got["peak"], got["baseline"]
+
+        verdict = mem.check(peak, dataset, declared, p, baseline_bytes=baseline)
         out = {"stage": stage, "ok": verdict["level"] != "fail",
                "secs": round(time.time() - t0, 1),
                "peak_gb": verdict["peak_gb"], "detail": _brief(result)}
@@ -116,6 +132,38 @@ def run_stage(dataset: str, stage: str, p: Paths | None = None) -> dict:
     except Exception as e:
         return {"stage": stage, "ok": False, "secs": round(time.time() - t0, 1),
                 "detail": f"{type(e).__name__}: {e}"}
+
+
+def _run_in_subprocess(dataset: str, stage: str, cfg: dict, p: Paths) -> dict:
+    """fork 一个干净的解释器跑这个 stage —— 与 test 阶段一样的做法。
+
+    这样每张表跑完内存彻底归还 OS，`dw run --family` 的绝对峰值 = 最大的**单张**表，
+    而不是全族累加（polars 的分配器不还页，同进程里只涨不落）。
+    """
+    from ._stage_worker import MARKER
+
+    env = dict(os.environ)
+    want = cfg.get("runtime", {}).get("polars_max_threads")
+    if want:
+        # 子进程里 polars 还没 import，线程池尚未固定，这里设才真的生效
+        env["POLARS_MAX_THREADS"] = str(int(want))
+
+    r = subprocess.run(
+        [sys.executable, "-m", "dwlib._stage_worker", dataset, stage],
+        cwd=str(p.root), capture_output=True, text=True, env=env,
+        encoding="utf-8", errors="replace",
+    )
+    lines = (r.stdout or "").splitlines()
+    # 被测代码自己的输出原样透传（子进程捕获后一次性吐出，顺序保持不变）
+    for line in lines:
+        if not line.startswith(MARKER):
+            print(line)
+    for line in reversed(lines):
+        if line.startswith(MARKER):
+            return json.loads(line[len(MARKER):])
+    # 没拿到结果行 = 子进程被杀（OOM）或启动就失败，把它的话如实带回来
+    tail = ((r.stderr or r.stdout or "").strip().splitlines() or ["无输出"])[-3:]
+    return {"error": f"子进程异常退出（returncode={r.returncode}）: " + " | ".join(tail)}
 
 
 def _record_peak(dataset: str, stage: str, verdict: dict, p: Paths) -> None:

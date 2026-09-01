@@ -48,7 +48,7 @@ param(
     [string]$Dataset,
     [string]$Family,
     [switch]$Monitor,
-    [ValidateSet("ingest", "transform", "test", "all")]
+    [ValidateSet("ingest", "transform", "test", "backfill", "all")]
     [string]$Stage = "all",
     [string]$Time = "06:00",
     [string]$Weekly,

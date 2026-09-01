@@ -550,17 +550,22 @@ def cmd_sla(a) -> int:
             S.parse_cron(a.schedule)          # 先校验再落盘
             schedule_ = a.schedule
     changed = S.set_sla(a.dataset, p, schedule=schedule_,
-                        freshness=a.freshness, runner=runner)
-    lines = [f"{a.dataset}: " + ("；".join(changed) if changed else "合约无变化")]
+                        freshness=a.freshness, runner=runner, dry_run=a.dry_run)
+    tag = "（--dry-run 未落盘）" if a.dry_run and changed else ""
+    lines = [f"{a.dataset}: " + ("；".join(changed) if changed else "合约无变化") + tag]
 
     if a.install or a.uninstall:
-        remove = bool(a.uninstall) or runner in ("manual", "family")
+        # runner 是 manual/family 时自动卸载/拒绝装独立任务，这条逻辑只管
+        # stage="all" 的默认任务——backfill 任务装不装是独立决定：一个
+        # runner: family 的表完全可以同时有一个独立的 dw-<ds>-backfill 任务
+        # （sla.runner/sla.schedule 只管这个表的 ingest/transform 由谁跑）。
+        remove = bool(a.uninstall) or (a.stage == "all" and runner in ("manual", "family"))
         cron = None if remove else (a.schedule or _contract_cron(a.dataset, p))
-        cmd = S.task_command(a.dataset, cron, p, remove=remove)
+        cmd = S.task_command(a.dataset, cron, p, stage=a.stage, remove=remove)
         if a.dry_run:
             lines.append("将执行（--dry-run 未执行）：" + " ".join(cmd))
         else:
-            r = S.apply_task(a.dataset, cron, p, remove=remove)
+            r = S.apply_task(a.dataset, cron, p, stage=a.stage, remove=remove)
             if r["note"]:
                 lines.append(r["note"])
             else:
@@ -788,7 +793,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("run", help="执行流水线")
     s.add_argument("dataset", nargs="?")
     s.add_argument("--family"); s.add_argument("--all", action="store_true")
-    s.add_argument("--stage", help="ingest / transform / test，可逗号组合")
+    s.add_argument("--stage", help="ingest / transform / test / backfill，可逗号组合")
     s.add_argument("--include-manual", action="store_true",
                    help="--family 时把 sla.schedule 为空（手动维护）的成员也带上")
     s.set_defaults(func=cmd_run)
@@ -841,6 +846,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--runner", choices=["family", "own", "manual"],
                    help="family=跟族任务跑；own=自己一个 Windows 任务；manual=只手动")
     s.add_argument("--freshness", help="如 30d")
+    s.add_argument("--stage", choices=["ingest", "transform", "backfill", "all"],
+                   default="all", help="--install/--uninstall 针对哪个 stage 的独立任务（默认 all）")
     s.add_argument("--install", action="store_true", help="顺带注册/更新 Windows 任务")
     s.add_argument("--uninstall", action="store_true", help="顺带卸载该 dataset 的独立任务")
     s.add_argument("--dry-run", action="store_true", help="只打印将要执行的任务命令")

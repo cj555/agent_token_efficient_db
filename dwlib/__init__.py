@@ -11,13 +11,16 @@
     dw.describe("sec__mdna")             # 合约摘要（读 registry.json）
     dw.write_curated(df, "sec__mdna")    # transform 的收尾动作（传 LazyFrame = 流式落盘）
     dw.write_curated_chunks(chunks, "x", "year")   # 大表按分区逐块落盘，控内存峰值
+    dw.write_curated_parts(chunks, "x")            # 不分区的大表按主键分桶逐块落盘
 """
+from .backfill import BackfillState, backfill_state
 from .config import Paths, find_repo_root, load_config, load_dotenv, paths
 from .contract import Contract, list_datasets, load_all, load_contract
 from .external import get_source, load_sources, run_health
 from .io import (
     arrow, connect, curated_path, describe, exists, frame, load, run_state,
-    scan, sql, vectors, write_curated, write_curated_chunks,
+    bucket_by_key, scan, sql, vectors, watermark,
+    write_curated, write_curated_chunks, write_curated_parts,
 )
 from . import memory
 from .quality import check
@@ -26,10 +29,10 @@ from .runner import dataset_config
 __version__ = "0.1.0"
 
 __all__ = [
-    "Contract", "Paths",
-    "arrow", "check", "connect", "curated_path", "dataset_config", "describe",
-    "exists", "find_repo_root", "frame", "get_source", "list_datasets", "load",
-    "load_all", "load_config", "load_contract", "load_dotenv", "load_sources",
-    "memory", "paths", "run_health", "run_state", "scan", "sql", "vectors",
-    "write_curated", "write_curated_chunks",
+    "BackfillState", "Contract", "Paths",
+    "arrow", "backfill_state", "check", "connect", "curated_path", "dataset_config",
+    "describe", "exists", "find_repo_root", "frame", "get_source", "list_datasets",
+    "load", "load_all", "load_config", "load_contract", "load_dotenv", "load_sources",
+    "memory", "paths", "run_health", "run_state", "scan", "sql", "vectors", "watermark",
+    "write_curated", "write_curated_chunks", "write_curated_parts", "bucket_by_key",
 ]

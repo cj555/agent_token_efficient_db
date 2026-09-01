@@ -64,8 +64,15 @@ def task_name(dataset: str, stage: str = "all") -> str:
 # ---------------- 合约里的 sla 块 ----------------
 
 def set_sla(dataset: str, p: Paths | None = None, *, schedule=_MISSING,
-            freshness: str | None = None, runner: str | None = None) -> list[str]:
-    """只改 contract.yaml 的 sla 块里那几行，返回改动摘要。"""
+            freshness: str | None = None, runner: str | None = None,
+            dry_run: bool = False) -> list[str]:
+    """只改 contract.yaml 的 sla 块里那几行，返回改动摘要。
+
+    dry_run=True 时只计算、不写盘——`dw sla --dry-run` 原来只让任务注册命令
+    "只打印不执行"，这里的合约改动却照写不误（实测踩过：跑一次
+    `--dry-run` 就把 schedule 真的改掉了）。传 True 时改动摘要照常返回，
+    给调用方预览用，只是最后不落盘。
+    """
     p = p or paths()
     if runner is not None and runner not in RUNNERS:
         raise ValueError(f"runner 只能是 {'/'.join(RUNNERS)}")
@@ -112,7 +119,7 @@ def set_sla(dataset: str, p: Paths | None = None, *, schedule=_MISSING,
             lines.insert(start + 1, f"  {key}: {value}")
             end += 1
             changed.append(f"{key}: （新增）→ {value}")
-    if changed:
+    if changed and not dry_run:
         f.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return changed
 

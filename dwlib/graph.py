@@ -22,12 +22,22 @@ _SKIP_DIRS = {".git", ".venv", "venv", "__pycache__", "storage", ".health", ".dw
 
 
 def _iter_code_files(root: Path):
-    for f in root.rglob("*"):
-        if f.suffix not in _SCAN_SUFFIXES or not f.is_file():
-            continue
-        if any(part in _SKIP_DIRS for part in f.parts):
-            continue
-        yield f
+    """按代码后缀遍历仓库。用 os.walk 原地剪掉 _SKIP_DIRS（尤其是 storage），
+
+    不用 Path.rglob("*")——那会先把整棵目录树物理遍历一遍再按后缀/目录过滤，
+    对 storage/ 这种可能有几十万个文件的目录代价极高（实测 storage/blob/
+    单个外部源下就有 19 万+子目录，rglob 在 Windows 上跑 dw index 能卡到
+    一小时以上都遍历不完）。os.walk 允许在遍历途中对 dirnames 就地剪枝，
+    从根源上不下钻进 storage/.git 等目录，输出结果与旧实现完全一致。
+    """
+    import os
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        for name in filenames:
+            f = Path(dirpath) / name
+            if f.suffix in _SCAN_SUFFIXES:
+                yield f
 
 
 def scan_refs(p: Paths, known: set[str]) -> dict[str, list[dict]]:
