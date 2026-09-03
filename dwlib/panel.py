@@ -22,7 +22,7 @@ import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .config import Paths, paths
 
@@ -151,7 +151,8 @@ class _Handler(BaseHTTPRequestHandler):
     # ---- 路由 ----
     def do_GET(self) -> None:
         from . import dashboard
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         if path == "/":
             html = dashboard.build_html(self.paths_, live_token=self.token)
             self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
@@ -159,8 +160,41 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(dashboard.state(self.paths_))
         elif path == "/api/jobs":
             self._json({"jobs": jobs()})
+        elif path == "/api/export":
+            self._export(parse_qs(parsed.query))
         else:
             self._json({"error": "no such route"}, 404)
+
+    def _export(self, qs: dict[str, list[str]]) -> None:
+        """只读、不改任何状态，所以跟 /api/state 一样不要求 token——面板本来
+        就只绑 127.0.0.1，本机内浏览器点一下就该能直接下载，不用先过 fetch。
+        """
+        from .io import export_last_n
+
+        ds = (qs.get("dataset") or [""])[0]
+        if ds not in _datasets(self.paths_):
+            self._json({"error": f"没有这个 dataset：{ds}"}, 400)
+            return
+        try:
+            n = int((qs.get("limit") or ["100"])[0])
+        except ValueError:
+            n = 100
+        try:
+            df = export_last_n(ds, n, self.paths_)
+        except Exception as e:
+            self._json({"error": f"{type(e).__name__}: {e}"}, 400)
+            return
+        import io as _io
+        buf = _io.BytesIO()
+        df.write_csv(buf)
+        fname = f"{ds}_last{df.height}.csv"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+        self.send_header("Content-Length", str(buf.tell()))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(buf.getvalue())
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path

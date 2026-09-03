@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Paths, paths
+from .io import _EXPORT_MAX_ROWS
 
 _COLORS = {"ok": "#16a34a", "warn": "#d97706", "fail": "#dc2626", "none": "#94a3b8"}
 _LABEL = {"ok": "正常", "warn": "警告", "fail": "故障", "none": "未监控"}
@@ -54,6 +55,7 @@ th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);font-
 th{color:var(--muted);font-weight:500}tr:last-child td{border-bottom:0}
 .dot{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:2px}
 .tl{font-family:ui-monospace,Consolas,monospace;font-size:12px}
+.tr{text-align:right;font-family:ui-monospace,Consolas,monospace;font-size:12px}
 .pend{background:var(--card);border:1px solid var(--line);border-left:6px solid #d97706;
   border-radius:10px;padding:10px 14px;margin-bottom:8px}
 .plan{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
@@ -77,6 +79,20 @@ table.pvt{width:auto;min-width:100%;border:0;border-radius:0;
 
 def _e(x: Any) -> str:
     return html.escape(str(x if x is not None else ""))
+
+
+def _fmt_rows(n: Any) -> str:
+    return f"{n:,}" if isinstance(n, int) else "—"
+
+
+def _fmt_delta(n: Any) -> str:
+    if not isinstance(n, int):
+        return "—"
+    if n > 0:
+        return f'<span style="color:{_COLORS["ok"]}">+{n:,}</span>'
+    if n < 0:
+        return f'<span style="color:{_COLORS["fail"]}">{n:,}</span>'
+    return "0"
 
 
 def _badge(text: str, status: str) -> str:
@@ -225,6 +241,9 @@ def _plan_cell(d: dict, tasks: dict, live: bool) -> str:
         f'<input class="time" type="time" value="{_e(hhmm or "15:00")}">'
         f'<button class="save">保存计划</button>'
         f'<button class="run">立即运行</button>'
+        f'<input class="exportn" type="number" min="1" max="{_EXPORT_MAX_ROWS}" '
+        f'value="100" title="导出最新分区末尾几行">'
+        f'<button class="export" title="导出 CSV（不需要确认，只读，直接下载）">导出 CSV</button>'
         f'<div class="jobline muted"></div>'
         f'<div class="muted" style="font-size:11.5px">{_e(tip)}</div></div>')
 
@@ -269,6 +288,11 @@ document.querySelectorAll(".plan").forEach(el => {
       }, 5000);
     } catch (e) { line.textContent = "失败：" + e.message; }
   };
+  el.querySelector(".export").onclick = () => {
+    const n = el.querySelector(".exportn").value || "100";
+    // 只读、不改状态，不用走 fetch+token——直接开新标签页触发浏览器下载。
+    window.open(`/api/export?dataset=${encodeURIComponent(ds)}&limit=${encodeURIComponent(n)}`, "_blank");
+  };
 });
 """
 
@@ -307,11 +331,11 @@ def _preview_row(prev: dict | None) -> str:
     if not prev:
         return ""
     if prev.get("error"):
-        return (f'<tr class="pv"><td colspan="7"><span class="muted">'
+        return (f'<tr class="pv"><td colspan="9"><span class="muted">'
                 f'预览 · {_e(prev["error"])}</span></td></tr>')
     cols, rows = prev.get("columns") or [], prev.get("rows") or []
     if not cols or not rows:
-        return ('<tr class="pv"><td colspan="7"><span class="muted">'
+        return ('<tr class="pv"><td colspan="9"><span class="muted">'
                 '预览 · 最新分区里没有行</span></td></tr>')
     part = prev.get("partition") or ""
     where = f"最新分区 {part} " if part else ""
@@ -320,7 +344,7 @@ def _preview_row(prev: dict | None) -> str:
     head = "".join(f"<th>{_e(c)}</th>" for c in cols)
     body = "".join("<tr>" + "".join(f"<td>{_e(v)}</td>" for v in r) + "</tr>"
                    for r in rows)
-    return (f'<tr class="pv"><td colspan="7"><details>'
+    return (f'<tr class="pv"><td colspan="9"><details>'
             f'<summary>预览 · {_e(where)}末尾 {len(rows)} 行{_e(more)}</summary>'
             f'<div class="pvw"><table class="pvt"><tr>{head}</tr>{body}</table></div>'
             f'</details></td></tr>')
@@ -421,6 +445,8 @@ def render(st: dict, live_token: str = "") -> str:
         f'{_LABEL[d["status"]]}</td>'
         f'<td class="tl">{_e(nxt_text)}</td>'
         f'<td>{_e(d.get("last_run") or "—")}</td><td>{_e(d["freshness"])}</td>'
+        f'<td class="tr">{_fmt_rows(d.get("rows"))}</td>'
+        f'<td class="tr">{_fmt_delta(d.get("rows_added"))}</td>'
         f'<td>{_plan_cell(d, tasks, bool(live_token))}</td>'
         f'<td class="muted">{_e(d.get("reason") or "")}</td></tr>'
         + _preview_row(previews.get(d["dataset"]))
@@ -456,7 +482,7 @@ def render(st: dict, live_token: str = "") -> str:
 <h2>外部数据源</h2>
 <div class="grid">{cards}</div>
 <h2>dataset 新鲜度（curated 表有没有如期产出）</h2>
-<table><tr><th>dataset</th><th>状态</th><th>下次运行 ↑</th><th>最后成功</th><th>SLA</th><th>计划</th><th></th></tr>
+<table><tr><th>dataset</th><th>状态</th><th>下次运行 ↑</th><th>最后成功</th><th>SLA</th><th>总行数</th><th>新增</th><th>计划</th><th></th></tr>
 {frows}</table>
 <h2>探测时间线</h2>
 {_timeline(history, [r["source"] for r in results])}

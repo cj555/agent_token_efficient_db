@@ -370,6 +370,24 @@ def cmd_run(a) -> int:
     return 1 if failed else 0
 
 
+def cmd_run_reset(a) -> int:
+    """人工清零某个 dataset 某个 stage 的连续失败熔断（不传 --stage 清全部阶段）。
+
+    跟 `dw fixlog --clear` 是同一个心智：熔断了就不会自动恢复，必须显式确认
+    "我已经诊断/修好了"再解除，不能因为随手跑一次成功了就悄悄免责。
+    """
+    from .health import run_attempts_clear
+    p = paths()
+    cleared = run_attempts_clear(a.dataset, a.stage, p)
+    if not cleared:
+        out({"dataset": a.dataset, "stage": a.stage, "cleared": []}, a.json,
+            f"{a.dataset}{':' + a.stage if a.stage else ''}: 没有熔断记录，无需清零")
+        return 0
+    out({"dataset": a.dataset, "stage": a.stage, "cleared": cleared}, a.json,
+        "已清零：\n  " + "\n  ".join(cleared))
+    return 0
+
+
 def cmd_rm(a) -> int:
     from .remove import apply, plan
     p = paths()
@@ -592,6 +610,10 @@ def cmd_panel(a) -> int:
 def cmd_sql(a) -> int:
     from .io import sql
     df = sql(a.query)
+    if a.csv:
+        df.write_csv(a.csv)
+        print(f"已导出 {df.height} 行 × {df.width} 列 → {a.csv}")
+        return 0
     if a.json:
         print(json.dumps(df.to_dicts(), ensure_ascii=False, default=str, indent=1))
     else:
@@ -681,6 +703,20 @@ def _source_problems(p) -> list[str]:
     return out_
 
 
+def _run_quarantine_problems(p) -> list[str]:
+    """dataset 运行侧的体检：ingest/transform/backfill 有没有连续失败到被熔断
+    （见 dwlib.runner.run_stage 的熔断包装，跟外部源熔断是独立的两套台账）。
+    """
+    from .health import run_attempts_load
+    out_: list[str] = []
+    for key, rec in run_attempts_load(p).items():
+        if rec.get("quarantined"):
+            ds, _, stage = key.partition(":")
+            out_.append(f"{ds}[{stage}]: 已熔断（连续 {rec.get('fails')} 次运行失败），"
+                        f"需人工诊断后 `dw run-reset {ds} --stage {stage}`")
+    return out_
+
+
 def cmd_doctor(a) -> int:
     """一次性体检：结构、生成物是否过期、悬空引用、未跑的 dataset。"""
     from .contract import load_all
@@ -714,6 +750,7 @@ def cmd_doctor(a) -> int:
         if name in stale and dwio.exists(name, p):
             problems.append(f"{name}: {stale[name]['reason']}")
     problems.extend(_source_problems(p))
+    problems.extend(_run_quarantine_problems(p))
     if not p.index_md.is_file():
         problems.append("data_contracts/INDEX.md 缺失（跑 dw index）")
     text = "\n".join(f"  - {x}" for x in problems) or "  一切正常"
@@ -798,6 +835,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="--family 时把 sla.schedule 为空（手动维护）的成员也带上")
     s.set_defaults(func=cmd_run)
 
+    s = sub.add_parser("run-reset", help="清零 dataset 某阶段的连续失败熔断（见 dw doctor 提示）")
+    s.add_argument("dataset")
+    s.add_argument("--stage", help="ingest / transform / backfill；不传清该 dataset 全部阶段")
+    s.set_defaults(func=cmd_run_reset)
+
     s = sub.add_parser("rm", help="删除 dataset（默认 dry-run）")
     s.add_argument("dataset")
     s.add_argument("--apply", action="store_true")
@@ -860,6 +902,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("sql", help="跨 dataset DuckDB 查询")
     s.add_argument("query")
+    s.add_argument("--csv", metavar="PATH", help="导出成 CSV 文件而不是打印到终端（结果多/要截断时用）")
     s.set_defaults(func=cmd_sql)
 
     s = sub.add_parser("doctor", help="仓库体检")

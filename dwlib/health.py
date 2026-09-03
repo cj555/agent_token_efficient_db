@@ -88,6 +88,65 @@ def attempts_record(source_id: str, outcome: str, note: str = "",
     return rec
 
 
+# ---------------- dataset 运行台账（熔断） ----------------
+# 跟上面的 fix_attempts 是同一套"连续失败 N 次自动熔断"范式，但保护的是不同
+# 的事：fix_attempts 记的是"修外部源的尝试"，这里记的是"dataset 某个 stage
+# 本身（ingest/transform/backfill）反复失败"——比如 backfill.py 撞上一个真实
+# bug、游标卡在同一个窗口不再前进，外部循环脚本或每天一次的定时任务会对着
+# 同一个坏窗口静默重试到天荒地老。两者报警渠道、人工处理流程不一样（一个走
+# fix-source skill，一个是"看 dw run-reset 之前先去看代码"），故意不共用
+# 同一份 fix_attempts.json，避免 `dw fixlog` 的语义变模糊。
+
+RUN_ATTEMPT_LIMIT = 3   # 跟 ATTEMPT_LIMIT 用同一个阈值，保持两套熔断心智一致
+
+
+def run_attempts_load(p: Paths | None = None) -> dict[str, dict]:
+    return _read_json((p or paths()).health_dir / "run_attempts.json", {})
+
+
+def run_attempts_record(dataset: str, stage: str, outcome: str, note: str = "",
+                        p: Paths | None = None) -> dict:
+    """记一次 dataset 某个 stage 的运行结果。键是 f"{dataset}:{stage}"，
+    outcome ∈ {ok, fail}；连续第 RUN_ATTEMPT_LIMIT 次 fail 触发熔断
+    （quarantined=True）——`dwlib.runner.run_stage` 见到熔断标记会直接跳过、
+    不再调用该 stage 的 main()，需要 `dw run-reset` 人工清零才会再尝试。
+    """
+    if outcome not in ("ok", "fail"):
+        raise ValueError("outcome 只能是 ok / fail")
+    p = p or paths()
+    key = f"{dataset}:{stage}"
+    all_ = run_attempts_load(p)
+    rec = all_.setdefault(key, {"fails": 0, "quarantined": False, "log": []})
+    rec["log"] = (rec.get("log") or [])[-19:] + [
+        {"at": _now(), "outcome": outcome, "note": note}]
+    if outcome == "ok":
+        rec["fails"] = 0
+        rec["quarantined"] = False
+    else:
+        rec["fails"] = int(rec.get("fails", 0)) + 1
+        rec["quarantined"] = rec["fails"] >= RUN_ATTEMPT_LIMIT
+    _write_json(p.health_dir / "run_attempts.json", all_)
+    return rec
+
+
+def run_attempts_clear(dataset: str, stage: str | None = None,
+                       p: Paths | None = None) -> list[str]:
+    """人工诊断修好之后手动清零，不自动恢复——保持跟 fix_attempts 一样的
+    "遇到熔断必须人工介入"心智，不能因为随手跑一次成功了就悄悄免责。
+    不传 stage 就清掉这个 dataset 名下所有阶段的熔断记录。返回清掉的键列表。
+    """
+    p = p or paths()
+    all_ = run_attempts_load(p)
+    prefix = f"{dataset}:{stage}" if stage else f"{dataset}:"
+    cleared = [k for k in all_ if k == prefix or (stage is None and k.startswith(prefix))]
+    for k in cleared:
+        all_[k] = {"fails": 0, "quarantined": False,
+                   "log": (all_[k].get("log") or [])[-19:] + [
+                       {"at": _now(), "outcome": "reset", "note": "人工清零"}]}
+    _write_json(p.health_dir / "run_attempts.json", all_)
+    return cleared
+
+
 def attempts_clear(source_id: str, p: Paths | None = None) -> None:
     """人工解除熔断：清零计数，但保留历次尝试的日志（留痕）。"""
     p = p or paths()
@@ -170,6 +229,7 @@ def dataset_freshness(p: Paths | None = None) -> list[dict]:
             "runner": c.sla.runner,
             "family": c.family or (name.split("__")[0] if "__" in name else ""),
             "rows": state.get("rows"),
+            "rows_added": state.get("rows_added"),
             "sources": c.upstream_externals,
             "status": "ok",
             "reason": "",

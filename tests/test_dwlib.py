@@ -21,7 +21,7 @@ from dwlib.external import (
 )
 from dwlib.health import (
     ack_for, ack_load, ack_record, attempts_clear, attempts_load, attempts_record,
-    dataset_freshness,
+    dataset_freshness, run_attempts_clear, run_attempts_load, run_attempts_record,
 )
 from dwlib.quality import check
 from dwlib.registry import reindex
@@ -482,6 +482,76 @@ def test_attempts_clear_keeps_log(repo: Paths):
     attempts_clear("src1", repo)
     rec = attempts_load(repo)["src1"]
     assert rec["fails"] == 0 and len(rec["log"]) == 2
+
+
+# ---------------- dataset 运行熔断（run_stage 循环保护） ----------------
+
+def test_run_attempts_quarantine_after_three_fails(repo: Paths):
+    """跟 attempts_record 的外部源熔断是同一套逻辑，独立的键空间/文件。"""
+    for _ in range(2):
+        rec = run_attempts_record("ds1", "backfill", "fail", "试了", repo)
+    assert rec["quarantined"] is False
+    rec = run_attempts_record("ds1", "backfill", "fail", "又试了", repo)
+    assert rec["fails"] == 3 and rec["quarantined"] is True
+    assert run_attempts_record("ds1", "backfill", "ok", "修好了", repo)["quarantined"] is False
+
+
+def test_run_attempts_clear_all_stages_for_dataset(repo: Paths):
+    run_attempts_record("ds1", "backfill", "fail", "x", repo)
+    run_attempts_record("ds1", "transform", "fail", "y", repo)
+    run_attempts_record("ds2", "backfill", "fail", "z", repo)
+    cleared = run_attempts_clear("ds1", None, repo)
+    assert set(cleared) == {"ds1:backfill", "ds1:transform"}
+    all_ = run_attempts_load(repo)
+    assert all_["ds1:backfill"]["fails"] == 0 and all_["ds1:transform"]["fails"] == 0
+    assert all_["ds2:backfill"]["fails"] == 1          # 没碰到别的 dataset
+
+
+def _write_failing_stage(p: Paths, dataset: str, stage: str) -> None:
+    d = p.dataset_dir(dataset)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "config.yaml").write_text("dataset: " + dataset + "\n", encoding="utf-8")
+    (d / f"{stage}.py").write_text(
+        "def main():\n    raise RuntimeError('boom')\n", encoding="utf-8")
+
+
+def test_run_stage_quarantines_after_repeated_failures(repo: Paths, monkeypatch):
+    """真实事故复现：一个 stage 连续失败 N 次后，第 N+1 次不再真的执行——
+    这是防止外部循环脚本对着同一个坏窗口静默重试到天荒地老的框架级熔断。"""
+    monkeypatch.setenv("DW_INPROCESS", "1")
+    from dwlib.runner import run_stage
+    _write_failing_stage(repo, "ds_bad", "backfill")
+
+    results = [run_stage("ds_bad", "backfill", repo) for _ in range(4)]
+    for r in results[:3]:
+        assert r["ok"] is False and not r.get("quarantined")
+    # 第 4 次应该被熔断短路：不再真的调用 main()，耗时应该接近 0 且标了 quarantined
+    assert results[3]["ok"] is False
+    assert results[3]["quarantined"] is True
+    assert results[3]["secs"] == 0.0
+
+    rec = run_attempts_load(repo)["ds_bad:backfill"]
+    assert rec["fails"] == 3 and rec["quarantined"] is True      # 第 4 次没有再累加
+
+    run_attempts_clear("ds_bad", "backfill", repo)
+    r = run_stage("ds_bad", "backfill", repo)
+    assert r["ok"] is False and not r.get("quarantined")          # 清零后恢复正常重试
+
+
+def test_run_stage_resets_streak_on_success(repo: Paths, monkeypatch):
+    monkeypatch.setenv("DW_INPROCESS", "1")
+    from dwlib.runner import run_stage
+    _write_failing_stage(repo, "ds_flaky", "transform")
+    run_stage("ds_flaky", "transform", repo)
+    run_stage("ds_flaky", "transform", repo)
+    assert run_attempts_load(repo)["ds_flaky:transform"]["fails"] == 2
+
+    # 换成会成功的 transform.py，模拟"人工修好了，重新跑一次成功"
+    (repo.dataset_dir("ds_flaky") / "transform.py").write_text(
+        "def main():\n    return {'rows': 0}\n", encoding="utf-8")
+    r = run_stage("ds_flaky", "transform", repo)
+    assert r["ok"] is True
+    assert run_attempts_load(repo)["ds_flaky:transform"]["fails"] == 0
 
 
 def test_ack_requires_note(repo: Paths):

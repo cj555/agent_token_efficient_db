@@ -70,7 +70,40 @@ def apply_thread_override(cfg: dict) -> str:
     return ""
 
 
+_GUARDED_STAGES = ("ingest", "transform", "backfill")   # test 阶段不熔断：失败可见、成本低、重跑无副作用
+
+
 def run_stage(dataset: str, stage: str, p: Paths | None = None) -> dict:
+    """`_run_stage_inner` 的薄包装：跑之前查有没有被熔断，跑完把结果记进
+    运行台账（`dwlib.health.run_attempts_record`）。真正的执行逻辑全部在
+    `_run_stage_inner` 里，本函数只管熔断检查和结果记录，不碰业务逻辑。
+
+    为什么要熔断：ingest 的水位线、backfill 的游标都是"只在成功时前进"的
+    设计，一个 stage 如果连续失败，不管是外部循环脚本还是每天一次的定时
+    任务，都会对着同一个坏窗口静默重试下去（真实事故：一次回补循环卡在
+    同一个游标连跑 42 轮才被发现）。连续失败达到
+    `health.RUN_ATTEMPT_LIMIT` 次后直接短路，不再调用 main()，需要人工
+    诊断后 `dw run-reset` 清零才会再尝试。
+    """
+    guarded = stage in _GUARDED_STAGES
+    if guarded:
+        from . import health
+        rec = health.run_attempts_load(p).get(f"{dataset}:{stage}", {})
+        if rec.get("quarantined"):
+            last_note = (rec.get("log") or [{}])[-1].get("note", "")
+            return {"stage": stage, "ok": False, "quarantined": True, "secs": 0.0,
+                    "detail": f"已连续失败 {rec.get('fails')} 次熔断，需要人工诊断后 "
+                              f"`dw run-reset {dataset} --stage {stage}` 清零再继续"
+                              f"（最近错误：{last_note}）"}
+    out = _run_stage_inner(dataset, stage, p)
+    if guarded:
+        from . import health
+        health.run_attempts_record(dataset, stage, "ok" if out.get("ok") else "fail",
+                                    note=out.get("detail", ""), p=p)
+    return out
+
+
+def _run_stage_inner(dataset: str, stage: str, p: Paths | None = None) -> dict:
     p = p or paths()
     d = p.dataset_dir(dataset)
     cfg = dataset_config(dataset, p)

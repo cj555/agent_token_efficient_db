@@ -177,6 +177,36 @@ def preview(dataset: str, n: int = 5, max_cols: int = 8,
     }
 
 
+_EXPORT_MAX_ROWS = 50_000
+
+
+def export_last_n(dataset: str, n: int, p: Paths | None = None):
+    """取 curated 表最新分区末尾 n 行、**全部列**（不截断），给面板的"导出 CSV"
+    按钮用。跟 `preview()` 同一个思路（只扫最新分区、惰性 tail，不做全表
+    sort——行序即写入序，不承诺按时间排序），区别只是这里不截断列数/单元格
+    内容，因为是要导出去用而不是"看一眼"。
+
+    n 会被夹到 [1, _EXPORT_MAX_ROWS]——本机内存预算就 1 GB，不设上限的话一次
+    导出几百万行会把面板这个本来该很轻的操作变成吃满预算的大查询。
+    """
+    pl = _pl()
+    pp = p or paths()
+    root = curated_path(dataset, pp)
+    if not exists(dataset, pp):
+        raise ValueError(f"{dataset}: 尚无 curated 数据（先跑 `dw run {dataset}`）")
+    part = _latest_part_dir(root)
+    if part is None:
+        raise ValueError(f"{dataset}: 尚无 curated 数据（先跑 `dw run {dataset}`）")
+
+    n = max(1, min(int(n), _EXPORT_MAX_ROWS))
+    kw: dict[str, Any] = {"hive_partitioning": True}
+    hs = _hive_schema(dataset, pp)
+    if hs:
+        kw["hive_schema"] = hs
+    lf = pl.scan_parquet(str(part / "*.parquet"), **kw)
+    return lf.tail(n).collect()
+
+
 def connect(p: Paths | None = None, datasets: Iterable[str] | None = None):
     """DuckDB 连接，所有 curated 表注册为同名视图。"""
     import duckdb
@@ -529,8 +559,10 @@ def _write_run_state(dataset: str, stats: dict, p: Paths, watermark: str | None 
     meta.mkdir(parents=True, exist_ok=True)
     state_f = meta / "run_state.json"
     state = json.loads(state_f.read_text(encoding="utf-8")) if state_f.is_file() else {}
+    prev_rows = state.get("rows")
     state["last_run"] = dt.datetime.now().isoformat(timespec="seconds")
     state["rows"] = stats["rows"]
+    state["rows_added"] = (stats["rows"] - prev_rows) if isinstance(prev_rows, int) else None
     state["bytes"] = stats["bytes"]
     if watermark is not None:      # None = 调用方没传 watermark_col，保留已有值不动
         state["watermark"] = watermark
